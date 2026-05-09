@@ -123,6 +123,7 @@ class App:
         self._local_ip      = self._get_local_ip()
         self._chat_fetching = False   # 중복 요청 방지 플래그
         self._users_fetching = False
+        self._my_pending = []         # 내가 보낸 (nick, text) — 서버 중복 방지용
 
         # 파이프라인 애니메이션
         self._node_rects    = {}
@@ -590,8 +591,14 @@ class App:
         self._chat_fetching = False
 
     def _on_new_messages(self, new_msgs: list, total: int):
-        """메인 스레드: 새 메시지를 UI에 반영."""
+        """메인 스레드: 새 메시지를 UI에 반영. 내가 보낸 메시지는 건너뜀."""
         for msg in new_msgs:
+            if msg.get("type") == "chat":
+                key = (msg.get("user", ""), msg.get("text", ""))
+                if key in self._my_pending:
+                    self._my_pending.remove(key)   # 첫 매칭 하나만 소비
+                    self.chat_messages.append(msg) # 로그엔 저장
+                    continue                        # 화면엔 이미 표시됨 — 스킵
             self.chat_messages.append(msg)
             self._append_chat_room(msg)
         self._chat_offset = total
@@ -612,27 +619,20 @@ class App:
         self.chat_msg_var.set("")
         nick = self.nick_var.get().strip() or "Host"
 
-        if not self._server_ready:
-            # 서버 없을 때만 로컬 직접 표시
-            msg = {"type": "chat", "user": nick, "text": text,
-                   "ts": datetime.datetime.now().strftime("%H:%M:%S")}
-            self.chat_messages.append(msg)
-            self._append_chat_room(msg)
-            return
+        # 즉시 로컬 표시 (딜레이 없음)
+        msg = {"type": "chat", "user": nick, "text": text,
+               "ts": datetime.datetime.now().strftime("%H:%M:%S")}
+        self.chat_messages.append(msg)
+        self._append_chat_room(msg)
 
-        # 서버가 있으면: 로컬 표시 X, POST → 즉시 강제 폴링으로 한 번만 표시
-        def _post_then_poll():
-            self._api_post(
-                f"/api/chat/{self.room_id}", {"user": nick, "text": text})
-            self.root.after(0, self._force_poll)
-
-        threading.Thread(target=_post_then_poll, daemon=True).start()
-
-    def _force_poll(self):
-        """메시지 전송 후 즉시 한 번 폴링."""
-        if not self._chat_fetching:
-            self._chat_fetching = True
-            threading.Thread(target=self._fetch_messages_bg, daemon=True).start()
+        if self._server_ready:
+            # fingerprint 등록 → 서버 폴링이 돌아올 때 이 메시지를 스킵
+            self._my_pending.append((nick, text))
+            threading.Thread(
+                target=self._api_post,
+                args=(f"/api/chat/{self.room_id}", {"user": nick, "text": text}),
+                daemon=True,
+            ).start()
 
     def _sys_chat(self, text: str):
         msg = {"type": "room.join", "user": "시스템",
