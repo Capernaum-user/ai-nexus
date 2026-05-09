@@ -17,7 +17,7 @@ from collections import deque
 from datetime import datetime
 from typing import Dict, List, Optional, Set
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -131,6 +131,14 @@ class RoomManager:
 
 
 rooms = RoomManager()
+
+# ─── REST message store (indexed, for tkinter polling) ────────────────────────
+_msg_store: Dict[str, List[dict]] = {}
+
+def _store(room_id: str, msg: dict):
+    if room_id not in _msg_store:
+        _msg_store[room_id] = []
+    _msg_store[room_id].append(msg)
 
 # ─── pipeline bridge ──────────────────────────────────────────────────────────
 _loop: Optional[asyncio.AbstractEventLoop] = None
@@ -246,6 +254,39 @@ async def api_state():
     return read_state()
 
 
+@app.post("/api/chat/{room_id}")
+async def api_post_chat(room_id: str, request: Request):
+    """GUI local user posts a message (no WebSocket needed on host side)."""
+    data = await request.json()
+    msg = {
+        "type": "chat",
+        "user": data.get("user", "Host"),
+        "text": data.get("text", "").strip(),
+        "ts": _now(),
+    }
+    if not msg["text"]:
+        return {"ok": False}
+    _store(room_id, msg)
+    room = rooms.get_or_create(room_id)
+    room.record(msg)
+    await room.broadcast_all(msg)
+    return {"ok": True, "index": len(_msg_store.get(room_id, [])) - 1}
+
+
+@app.get("/api/messages/{room_id}")
+async def api_get_messages(room_id: str, after: int = 0):
+    """GUI polls this to get new messages since last check."""
+    msgs = _msg_store.get(room_id, [])
+    return {"messages": msgs[after:], "total": len(msgs)}
+
+
+@app.get("/api/users/{room_id}")
+async def api_get_users(room_id: str):
+    room = rooms._rooms.get(room_id)
+    users = list(room.connections.keys()) if room else []
+    return {"users": users}
+
+
 @app.websocket("/ws/{room_id}/{user_id}")
 async def ws_endpoint(websocket: WebSocket, room_id: str, user_id: str):
     await websocket.accept()
@@ -267,6 +308,7 @@ async def ws_endpoint(websocket: WebSocket, room_id: str, user_id: str):
         "ts": _now(),
     }
     room.record(join_msg)
+    _store(room_id, join_msg)
     await room.broadcast_all(join_msg)
 
     # send current pipeline state if any
@@ -293,6 +335,7 @@ async def ws_endpoint(websocket: WebSocket, room_id: str, user_id: str):
                     "ts": _now(),
                 }
                 room.record(chat_msg)
+                _store(room_id, chat_msg)
                 await room.broadcast_all(chat_msg)
 
                 # intent detection

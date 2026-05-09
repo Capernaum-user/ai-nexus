@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AI Manager GUI  —  중앙 관리자
-Gemini(두뇌) + Claude(손) 자동 실행 채팅 인터페이스
+AI Nexus GUI  —  멀티유저 채팅 + 파이프라인 통합
+채팅방(좌) · 파이프라인 로그(중) · 대시보드(우)
 """
 
 import tkinter as tk
@@ -12,19 +12,28 @@ import threading
 import os
 import json
 import re
+import datetime
+import urllib.request
+import urllib.error
+import socket
+import time
 
-# ── 경로 ─────────────────────────────────────────────────────
-MANAGER_DIR        = r"D:\AI_Control\ai_manager"
-MANAGER_PS1        = os.path.join(MANAGER_DIR, "manager.ps1")
-STATE_FILE         = os.path.join(MANAGER_DIR, "STATE.json")
-PLAN_FILE          = os.path.join(MANAGER_DIR, "PLAN.md")
-QUEUE_FILE         = os.path.join(MANAGER_DIR, "TASK_QUEUE.json")
+# ── 경로 ──────────────────────────────────────────────────────────
+MANAGER_DIR   = os.path.dirname(os.path.abspath(__file__))
+MANAGER_PS1   = os.path.join(MANAGER_DIR, "manager.ps1")
+STATE_FILE    = os.path.join(MANAGER_DIR, "STATE.json")
+PLAN_FILE     = os.path.join(MANAGER_DIR, "PLAN.md")
+QUEUE_FILE    = os.path.join(MANAGER_DIR, "TASK_QUEUE.json")
 CLARIFY_QUEST_FILE = os.path.join(MANAGER_DIR, "CLARIFY_QUESTIONS.md")
 CLARIFY_ANS_FILE   = os.path.join(MANAGER_DIR, "CLARIFICATIONS.md")
-CONFIG_FILE        = os.path.join(MANAGER_DIR, "gui_config.json")
-CONTEXT_FILE       = os.path.join(MANAGER_DIR, "CONTEXT.md")
+CONFIG_FILE   = os.path.join(MANAGER_DIR, "gui_config.json")
+CONTEXT_FILE  = os.path.join(MANAGER_DIR, "CONTEXT.md")
+LOG_DIR       = os.path.join(MANAGER_DIR, "logs")
+CHAT_LOG_DIR  = os.path.join(LOG_DIR, "chat")
+SERVER_DIR    = os.path.join(MANAGER_DIR, "server")
+SERVER_PORT   = 8765
 
-# ── 파이프라인 단계 정의 ──────────────────────────────────────
+# ── 파이프라인 단계 ────────────────────────────────────────────────
 PIPELINE = [
     "INTAKE", "CLARIFY", "RESEARCH", "DEEP_RESEARCH", "HALLCHECK",
     "PLAN", "PARALLEL_EXECUTE", "INTEGRATE", "CODEX_REVIEW",
@@ -48,7 +57,6 @@ PIPELINE_INFO = [
     ("FINISH",           "manager", "Mgr", "보고서 저장",         "FINISH"),
 ]
 
-# 에이전트별 스타일 (배지배경, 배지글자/테두리, 노드활성배경)
 AGENT_STYLE = {
     "gemini":  ("#0d2a38", "#89dceb", "#0a1e2d"),
     "claude":  ("#0d2a1a", "#a6e3a1", "#0a1e12"),
@@ -56,16 +64,16 @@ AGENT_STYLE = {
     "manager": ("#352010", "#fab387", "#28180a"),
 }
 
-# ── 캔버스 노드 치수 (지그재그 2열 레이아웃) ────────────────
-NODE_H      = 46     # 노드 높이 (공통)
-ZZ_NODE_W   = 126    # 열당 노드 너비
-ZZ_COL_GAP  = 14     # 두 열 사이 수평 간격
-ZZ_ROW_GAP  = 24     # 행 간 수직 간격 (래핑 화살표 공간)
-ZZ_PAD_X    = 5      # 좌우 여백
-ZZ_PAD_TOP  = 10     # 상단 여백
-ZZ_TOTAL_W  = ZZ_PAD_X * 2 + ZZ_NODE_W * 2 + ZZ_COL_GAP  # = 276
+# 캔버스 치수
+NODE_H     = 46
+ZZ_NODE_W  = 126
+ZZ_COL_GAP = 14
+ZZ_ROW_GAP = 24
+ZZ_PAD_X   = 5
+ZZ_PAD_TOP = 10
+ZZ_TOTAL_W = ZZ_PAD_X * 2 + ZZ_NODE_W * 2 + ZZ_COL_GAP  # 276
 
-# ── 다크 테마 ─────────────────────────────────────────────────
+# ── 다크 테마 ──────────────────────────────────────────────────────
 BG_MAIN    = "#1e1e2e"
 BG_DARK    = "#181825"
 BG_TOP     = "#11111b"
@@ -74,6 +82,7 @@ BG_ENTRY   = "#313244"
 BG_CLARIFY = "#12122a"
 BG_PANEL   = "#16162a"
 BG_PHDR    = "#1a1a30"
+BG_CHAT    = "#181830"
 
 FG_MAIN    = "#cdd6f4"
 FG_GRAY    = "#585b70"
@@ -85,73 +94,95 @@ FG_SYSTEM  = "#fab387"
 FG_WARN    = "#f9e2af"
 FG_ERR     = "#f38ba8"
 FG_ACCENT  = "#cba6f7"
+FG_INTENT  = "#f9e2af"
 
 
 class App:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("AI Manager")
-        self.root.geometry("1300x800")
+        self.root.title("AI Nexus")
+        self.root.geometry("1560x880")
         self.root.configure(bg=BG_MAIN)
-        self.root.minsize(900, 520)
+        self.root.minsize(1100, 600)
 
         self.proc           = None
         self.clarify_mode   = False
         self.clarify_lines  = []
         self._last_spin     = ""
-
         self._plan_cache    = ""
         self._queue_cache   = ""
         self._state_cache   = ""
 
-        # 위저드 (lazy build)
-        self.wizard_frame   = None
-        self.wz_goal        = None
-        self.wz_notes       = None
-        self.wz_proj_type   = None
-        self.wz_quality     = None
-        self.wz_env         = None
-        self.wz_lang        = None
-        self.wz_tech        = {}
-        self.wz_output      = {}
-        self.wz_err_lbl     = None
-        self.wz_canvas      = None
-        self.wz_canvas_win  = None
+        # 채팅 상태
+        self.chat_messages  = []   # 로컬 보관용
+        self._chat_offset   = 0    # 서버에서 마지막으로 가져온 인덱스
+        self.my_nick        = "Host"
+        self.room_id        = "general"
+        self.server_proc    = None
+        self._server_ready  = False
+        self._local_ip      = self._get_local_ip()
+
+        # 파이프라인 애니메이션
+        self._node_rects    = {}
+        self._pulse_state   = False
+        self._current_stage = ""
+
+        # 위저드
+        self.wizard_frame  = None
+        self.wz_goal       = None
+        self.wz_notes      = None
+        self.wz_proj_type  = None
+        self.wz_quality    = None
+        self.wz_env        = None
+        self.wz_lang       = None
+        self.wz_tech       = {}
+        self.wz_output     = {}
+        self.wz_err_lbl    = None
+        self.wz_canvas     = None
+        self.wz_canvas_win = None
+
+        # OS 폴더 생성
+        os.makedirs(CHAT_LOG_DIR, exist_ok=True)
 
         self._build_fonts()
         self._build_ui()
         self._load_config()
         self._welcome()
         self._clear_activity()
-        self._draw_pipeline_canvas("")   # 초기 빈 그래프
+        self._draw_pipeline_canvas("")
+
+        self._start_server()
 
         self._poll_state()
         self._poll_clarify()
         self._poll_tasks()
+        self._poll_chat()
+        self._anim_pipeline()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # ── 폰트 ─────────────────────────────────────────────────
+    # ── 폰트 ──────────────────────────────────────────────────────
     def _build_fonts(self):
-        self.fn_mono        = font.Font(family="Consolas",     size=10)
-        self.fn_dash        = font.Font(family="Consolas",     size=9)
-        self.fn_dash_b      = font.Font(family="Consolas",     size=9,  weight="bold")
-        self.fn_ui          = font.Font(family="Malgun Gothic", size=11)
-        self.fn_small       = font.Font(family="Malgun Gothic", size=9)
-        self.fn_bold        = font.Font(family="Malgun Gothic", size=10, weight="bold")
-        self.fn_title       = font.Font(family="Malgun Gothic", size=10, weight="bold")
-        # 캔버스 전용
-        self.fn_cv_name     = font.Font(family="Consolas",     size=9,  weight="bold")
-        self.fn_cv_desc     = font.Font(family="Malgun Gothic", size=8)
-        self.fn_cv_badge    = font.Font(family="Consolas",     size=8,  weight="bold")
-        self.fn_cv_num      = font.Font(family="Consolas",     size=8)
+        self.fn_mono    = font.Font(family="Consolas",      size=10)
+        self.fn_dash    = font.Font(family="Consolas",      size=9)
+        self.fn_dash_b  = font.Font(family="Consolas",      size=9, weight="bold")
+        self.fn_ui      = font.Font(family="Malgun Gothic", size=11)
+        self.fn_small   = font.Font(family="Malgun Gothic", size=9)
+        self.fn_bold    = font.Font(family="Malgun Gothic", size=10, weight="bold")
+        self.fn_title   = font.Font(family="Malgun Gothic", size=10, weight="bold")
+        self.fn_cv_name  = font.Font(family="Consolas",    size=9,  weight="bold")
+        self.fn_cv_desc  = font.Font(family="Malgun Gothic", size=8)
+        self.fn_cv_badge = font.Font(family="Consolas",    size=8,  weight="bold")
+        self.fn_cv_num   = font.Font(family="Consolas",    size=8)
+        self.fn_chat_name = font.Font(family="Consolas",   size=9,  weight="bold")
+        self.fn_chat_msg  = font.Font(family="Malgun Gothic", size=10)
+        self.fn_chat_ts   = font.Font(family="Consolas",   size=8)
 
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
     # UI 구성
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
     def _build_ui(self):
-
-        # ── 1. 상태 바 ────────────────────────────────────────
+        # ── 상태 바 ──────────────────────────────────────────────
         topbar = tk.Frame(self.root, bg=BG_TOP, height=40)
         topbar.pack(fill="x")
         topbar.pack_propagate(False)
@@ -164,8 +195,12 @@ class App:
                                     font=self.fn_small)
         self.lbl_status.pack(side="left", pady=6)
 
-        tk.Label(topbar, text="  AI Manager", fg=FG_MAIN, bg=BG_TOP,
+        tk.Label(topbar, text="  AI Nexus", fg=FG_MAIN, bg=BG_TOP,
                  font=self.fn_title).pack(side="left", pady=6)
+
+        self.server_badge = tk.Label(topbar, text="● 서버 시작 중",
+                                      fg=FG_GRAY, bg=BG_TOP, font=self.fn_small)
+        self.server_badge.pack(side="left", padx=12, pady=6)
 
         tk.Button(topbar, text="✦ 새 프로젝트", command=self._force_new,
                   bg="#313244", fg=FG_SYSTEM, activebackground="#45475a",
@@ -173,7 +208,7 @@ class App:
                   font=self.fn_small, padx=10, pady=4,
                   cursor="hand2", bd=0).pack(side="right", padx=4, pady=6)
 
-        # ── 2. 작업 폴더 바 ───────────────────────────────────
+        # ── 작업 폴더 바 ─────────────────────────────────────────
         wsbar = tk.Frame(self.root, bg=BG_WS, height=36)
         wsbar.pack(fill="x")
         wsbar.pack_propagate(False)
@@ -197,25 +232,29 @@ class App:
                   font=self.fn_small, padx=10, pady=4,
                   cursor="hand2", bd=0).pack(side="right", padx=(0, 10), pady=5)
 
-        self.lbl_ws_hint = tk.Label(wsbar, text="미지정 시 ai_manager/workspace/ 사용",
+        self.lbl_ws_hint = tk.Label(wsbar, text="미지정 시 ai-nexus/workspace/ 사용",
                                      fg=FG_GRAY, bg=BG_WS, font=self.fn_small)
         self.lbl_ws_hint.pack(side="right", padx=6)
 
-        # ── 3. 메인 영역 ──────────────────────────────────────
+        # ── 메인 영역 (3열) ───────────────────────────────────────
         main_area = tk.Frame(self.root, bg=BG_MAIN)
         main_area.pack(fill="both", expand=True)
 
-        # ── 3-A. 채팅 출력 (좌) ───────────────────────────────
-        chat_outer = tk.Frame(main_area, bg=BG_MAIN)
-        chat_outer.pack(side="left", fill="both", expand=True)
+        # LEFT: 채팅방 (500px)
+        self._build_chat_room(main_area)
+        tk.Frame(main_area, bg=FG_BORDER, width=1).pack(side="left", fill="y")
+
+        # CENTER: 파이프라인 로그 (expand)
+        log_outer = tk.Frame(main_area, bg=BG_MAIN)
+        log_outer.pack(side="left", fill="both", expand=True)
 
         self.chat = tk.Text(
-            chat_outer, bg=BG_MAIN, fg=FG_MAIN, font=self.fn_mono,
+            log_outer, bg=BG_MAIN, fg=FG_MAIN, font=self.fn_mono,
             relief="flat", wrap="word", state="disabled",
             padx=16, pady=10, selectbackground="#45475a",
             cursor="arrow", spacing1=1, spacing3=1,
         )
-        csb = tk.Scrollbar(chat_outer, command=self.chat.yview,
+        csb = tk.Scrollbar(log_outer, command=self.chat.yview,
                             bg=BG_MAIN, troughcolor=BG_MAIN,
                             activebackground=FG_BORDER, width=10)
         self.chat.configure(yscrollcommand=csb.set)
@@ -223,9 +262,9 @@ class App:
         self.chat.pack(side="left", fill="both", expand=True)
 
         for name, color in {
-            "user": FG_USER, "gemini": FG_GEMINI, "claude": FG_CLAUDE,
-            "system": FG_SYSTEM, "warn": FG_WARN, "error": FG_ERR,
-            "accent": FG_ACCENT, "gray": FG_GRAY, "main": FG_MAIN,
+            "user":  FG_USER,   "gemini": FG_GEMINI, "claude": FG_CLAUDE,
+            "system": FG_SYSTEM, "warn":   FG_WARN,   "error":  FG_ERR,
+            "accent": FG_ACCENT, "gray":   FG_GRAY,   "main":   FG_MAIN,
         }.items():
             self.chat.tag_configure(name, foreground=color)
         self.chat.tag_configure("bold_gemini", foreground=FG_GEMINI,
@@ -233,13 +272,12 @@ class App:
         self.chat.tag_configure("bold_system", foreground=FG_SYSTEM,
             font=font.Font(family="Consolas", size=10, weight="bold"))
 
-        # ── 구분선 ────────────────────────────────────────────
         tk.Frame(main_area, bg=FG_BORDER, width=1).pack(side="left", fill="y")
 
-        # ── 3-B. 우측 대시보드 ────────────────────────────────
+        # RIGHT: 대시보드 (460px)
         self._build_dashboard(main_area)
 
-        # ── 4. CLARIFY 패널 (숨김) ────────────────────────────
+        # ── CLARIFY 패널 ──────────────────────────────────────────
         self.clarify_frame = tk.Frame(self.root, bg=BG_CLARIFY, pady=6)
 
         tk.Label(self.clarify_frame,
@@ -247,27 +285,27 @@ class App:
                  fg=FG_GEMINI, bg=BG_CLARIFY,
                  font=self.fn_bold).pack(anchor="w", padx=10, pady=(4, 2))
 
-        clarify_q_wrap = tk.Frame(self.clarify_frame, bg=BG_CLARIFY)
-        clarify_q_wrap.pack(fill="x", padx=10, pady=(0, 4))
+        cq_wrap = tk.Frame(self.clarify_frame, bg=BG_CLARIFY)
+        cq_wrap.pack(fill="x", padx=10, pady=(0, 4))
 
         self.clarify_q = tk.Text(
-            clarify_q_wrap, bg="#12122e", fg=FG_GEMINI,
-            font=self.fn_mono, height=14, state="disabled",
+            cq_wrap, bg="#12122e", fg=FG_GEMINI,
+            font=self.fn_mono, height=10, state="disabled",
             relief="flat", padx=10, pady=8, wrap="word",
         )
-        clarify_sb = tk.Scrollbar(clarify_q_wrap, command=self.clarify_q.yview,
-                                   bg=BG_CLARIFY, troughcolor=BG_CLARIFY, width=8)
-        self.clarify_q.configure(yscrollcommand=clarify_sb.set)
-        clarify_sb.pack(side="right", fill="y")
+        cq_sb = tk.Scrollbar(cq_wrap, command=self.clarify_q.yview,
+                              bg=BG_CLARIFY, troughcolor=BG_CLARIFY, width=8)
+        self.clarify_q.configure(yscrollcommand=cq_sb.set)
+        cq_sb.pack(side="right", fill="y")
         self.clarify_q.pack(side="left", fill="x", expand=True)
 
-        # ── 5. 입력 영역 ──────────────────────────────────────
+        # ── 입력 영역 (clarify / 직접 목표 입력) ─────────────────
         input_outer = tk.Frame(self.root, bg=BG_DARK, pady=8)
         input_outer.pack(fill="x", side="bottom")
 
         self.lbl_hint = tk.Label(
             input_outer,
-            text="목표를 입력하면 새 프로젝트를 시작합니다  (Enter로 전송)",
+            text="파이프라인 직접 목표 입력  (Enter로 전송)  —  또는 좌측 채팅에서 AI 분석 실행",
             fg=FG_GRAY, bg=BG_DARK, font=self.fn_small,
         )
         self.lbl_hint.pack(anchor="w", padx=14, pady=(0, 4))
@@ -284,7 +322,6 @@ class App:
         )
         self.entry.pack(side="left", fill="x", expand=True, ipady=9, padx=(4, 8))
         self.entry.bind("<Return>", lambda _: self._send())
-        self.entry.focus()
 
         self.btn_send = tk.Button(
             row, text="전송", command=self._send,
@@ -294,11 +331,384 @@ class App:
         )
         self.btn_send.pack(side="right", padx=4)
 
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
+    # 채팅방 패널 (LEFT)
+    # ══════════════════════════════════════════════════════════════
+    def _build_chat_room(self, parent):
+        panel = tk.Frame(parent, bg=BG_CHAT, width=500)
+        panel.pack(side="left", fill="y")
+        panel.pack_propagate(False)
+
+        # 헤더
+        hdr = tk.Frame(panel, bg=BG_PHDR, height=26)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+
+        tk.Label(hdr, text="  💬", fg=FG_GEMINI, bg=BG_PHDR,
+                 font=self.fn_dash_b).pack(side="left", pady=3)
+        self.chat_room_lbl = tk.Label(hdr, text="채팅방  general",
+                                       fg=FG_GEMINI, bg=BG_PHDR, font=self.fn_dash_b)
+        self.chat_room_lbl.pack(side="left", pady=3)
+        self.chat_users_lbl = tk.Label(hdr, text="", fg=FG_GRAY, bg=BG_PHDR,
+                                        font=self.fn_small)
+        self.chat_users_lbl.pack(side="left", padx=4, pady=3)
+
+        tk.Button(hdr, text="💾", command=self._save_chat_log,
+                  bg=BG_PHDR, fg=FG_GRAY, relief="flat",
+                  font=self.fn_small, cursor="hand2", padx=4
+                  ).pack(side="right", pady=3, padx=4)
+
+        # 서버 정보 바
+        info_bar = tk.Frame(panel, bg=BG_TOP, height=22)
+        info_bar.pack(fill="x")
+        info_bar.pack_propagate(False)
+        self.srv_lbl = tk.Label(info_bar, text="  서버 준비 중...",
+                                 fg=FG_GRAY, bg=BG_TOP, font=self.fn_small)
+        self.srv_lbl.pack(side="left", pady=2)
+
+        # 메시지 영역
+        msg_wrap = tk.Frame(panel, bg=BG_CHAT)
+        msg_wrap.pack(fill="both", expand=True)
+
+        self.chat_room_box = tk.Text(
+            msg_wrap, bg=BG_CHAT, fg=FG_MAIN, font=self.fn_chat_msg,
+            relief="flat", wrap="word", state="disabled",
+            padx=10, pady=8, selectbackground="#45475a",
+            cursor="arrow", spacing1=3, spacing3=3,
+        )
+        crb_sb = tk.Scrollbar(msg_wrap, command=self.chat_room_box.yview,
+                               bg=BG_CHAT, troughcolor=BG_CHAT,
+                               activebackground=FG_BORDER, width=8)
+        self.chat_room_box.configure(yscrollcommand=crb_sb.set)
+        crb_sb.pack(side="right", fill="y")
+        self.chat_room_box.pack(side="left", fill="both", expand=True)
+
+        # 태그 설정
+        self.chat_room_box.tag_configure("me_name",
+            foreground=FG_USER, font=self.fn_chat_name)
+        self.chat_room_box.tag_configure("other_name",
+            foreground=FG_GEMINI, font=self.fn_chat_name)
+        self.chat_room_box.tag_configure("me_text",  foreground=FG_MAIN)
+        self.chat_room_box.tag_configure("other_text", foreground=FG_MAIN)
+        self.chat_room_box.tag_configure("system_c", foreground=FG_GRAY,
+            font=self.fn_chat_ts)
+        self.chat_room_box.tag_configure("ts_tag",   foreground=FG_GRAY,
+            font=self.fn_chat_ts)
+        self.chat_room_box.tag_configure("intent_tag", foreground=FG_WARN,
+            font=font.Font(family="Malgun Gothic", size=9, weight="bold"))
+
+        # AI 분석 버튼
+        ai_row = tk.Frame(panel, bg=BG_DARK, pady=5)
+        ai_row.pack(fill="x", padx=8)
+
+        self.btn_analyze = tk.Button(
+            ai_row,
+            text="🤖  AI가 대화 전체 분석 후 파이프라인 자동 시작",
+            command=self._analyze_chat,
+            bg="#162436", fg=FG_GEMINI,
+            activebackground="#1e3050", activeforeground=FG_GEMINI,
+            relief="flat", font=self.fn_bold, pady=9,
+            cursor="hand2", bd=0,
+        )
+        self.btn_analyze.pack(fill="x")
+
+        # 닉네임 + 입력 행
+        nick_row = tk.Frame(panel, bg=BG_DARK)
+        nick_row.pack(fill="x", padx=8, pady=(4, 0))
+
+        tk.Label(nick_row, text="닉:", fg=FG_GRAY, bg=BG_DARK,
+                 font=self.fn_small).pack(side="left")
+        self.nick_var = tk.StringVar(value="Host")
+        nick_e = tk.Entry(nick_row, textvariable=self.nick_var, width=10,
+                          bg=BG_ENTRY, fg=FG_USER, font=self.fn_small,
+                          relief="flat", insertbackground=FG_MAIN,
+                          highlightthickness=1, highlightbackground=FG_BORDER)
+        nick_e.pack(side="left", padx=(4, 0), ipady=4)
+
+        msg_row = tk.Frame(panel, bg=BG_DARK)
+        msg_row.pack(fill="x", padx=8, pady=(3, 8))
+
+        self.chat_msg_var = tk.StringVar()
+        chat_e = tk.Entry(msg_row, textvariable=self.chat_msg_var,
+                          bg=BG_ENTRY, fg=FG_MAIN, font=self.fn_chat_msg,
+                          relief="flat", insertbackground=FG_MAIN,
+                          highlightthickness=1, highlightbackground=FG_BORDER,
+                          highlightcolor=FG_USER)
+        chat_e.pack(side="left", fill="x", expand=True, ipady=8)
+        chat_e.bind("<Return>", lambda _: self._send_chat())
+
+        tk.Button(msg_row, text="전송", command=self._send_chat,
+                  bg=FG_USER, fg=BG_MAIN, font=self.fn_bold,
+                  relief="flat", padx=14, pady=8,
+                  cursor="hand2",
+                  activebackground="#74c7ec"
+                  ).pack(side="right", padx=(6, 0))
+
+    # ── 채팅방 메시지 추가 ────────────────────────────────────────
+    def _append_chat_room(self, msg: dict):
+        box = self.chat_room_box
+        mtype = msg.get("type", "chat")
+        ts    = msg.get("ts", "")
+        user  = msg.get("user", "")
+        text  = msg.get("text", "")
+
+        box.configure(state="normal")
+
+        if mtype == "room.join":
+            box.insert("end", f"  {ts}  {user} 입장\n", "system_c")
+        elif mtype == "room.leave":
+            box.insert("end", f"  {ts}  {user} 퇴장\n", "system_c")
+        elif mtype == "intent.detected":
+            snippet = msg.get("snippet", "")
+            box.insert("end", f"\n  🤖 작업 요청 감지: ", "intent_tag")
+            box.insert("end", f'"{snippet}"\n\n', "other_text")
+        elif mtype == "chat":
+            is_me = (user == self.nick_var.get())
+            name_tag = "me_name" if is_me else "other_name"
+            text_tag = "me_text" if is_me else "other_text"
+            box.insert("end", f"[{ts}] ", "ts_tag")
+            box.insert("end", f"{user}", name_tag)
+            box.insert("end", f"\n  {text}\n\n", text_tag)
+
+        box.see("end")
+        box.configure(state="disabled")
+
+    # ══════════════════════════════════════════════════════════════
+    # 서버 시작 / HTTP 통신
+    # ══════════════════════════════════════════════════════════════
+    def _get_local_ip(self) -> str:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "localhost"
+
+    def _start_server(self):
+        cmd = [
+            "python", "-m", "uvicorn", "main:app",
+            "--host", "0.0.0.0",
+            "--port", str(SERVER_PORT),
+            "--log-level", "warning",
+        ]
+        try:
+            self.server_proc = subprocess.Popen(
+                cmd, cwd=SERVER_DIR,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self.root.after(2500, self._check_server_ready)
+        except Exception as e:
+            self.srv_lbl.configure(text=f"  서버 오류: {e}", fg=FG_ERR)
+
+    def _check_server_ready(self):
+        try:
+            urllib.request.urlopen(
+                f"http://localhost:{SERVER_PORT}/api/state", timeout=1)
+            self._server_ready = True
+            ip_txt = f"  {self._local_ip}:{SERVER_PORT}  (브라우저 접속 가능)"
+            self.srv_lbl.configure(text=ip_txt, fg=FG_CLAUDE)
+            self.server_badge.configure(
+                text=f"● 서버 ON  {self._local_ip}:{SERVER_PORT}", fg=FG_CLAUDE)
+            self._sys_chat(f"서버 시작  —  {self._local_ip}:{SERVER_PORT}")
+            self._sys_chat("브라우저에서 접속하거나 프로그램을 여러 명이 열면 채팅 가능")
+        except Exception:
+            self.root.after(1500, self._check_server_ready)
+
+    def _api_get(self, path: str):
+        try:
+            url = f"http://localhost:{SERVER_PORT}{path}"
+            with urllib.request.urlopen(url, timeout=1) as r:
+                return json.loads(r.read())
+        except Exception:
+            return None
+
+    def _api_post(self, path: str, data: dict):
+        try:
+            url  = f"http://localhost:{SERVER_PORT}{path}"
+            body = json.dumps(data).encode("utf-8")
+            req  = urllib.request.Request(
+                url, data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=1) as r:
+                return json.loads(r.read())
+        except Exception:
+            return None
+
+    # ── 채팅 폴링 ────────────────────────────────────────────────
+    def _poll_chat(self):
+        if self._server_ready:
+            self._fetch_new_messages()
+            self._fetch_users()
+        self.root.after(500, self._poll_chat)
+
+    def _fetch_new_messages(self):
+        res = self._api_get(
+            f"/api/messages/{self.room_id}?after={self._chat_offset}")
+        if not res:
+            return
+        new_msgs = res.get("messages", [])
+        total    = res.get("total", self._chat_offset)
+        for msg in new_msgs:
+            self.chat_messages.append(msg)
+            self._append_chat_room(msg)
+        self._chat_offset = total
+
+    def _fetch_users(self):
+        res = self._api_get(f"/api/users/{self.room_id}")
+        if not res:
+            return
+        users = res.get("users", [])
+        # 호스트 자신은 서버에 없어도 표시
+        if users:
+            self.chat_users_lbl.configure(
+                text=f"• {len(users)}명: {', '.join(users)}")
+        else:
+            self.chat_users_lbl.configure(text="")
+
+    # ── 채팅 전송 ────────────────────────────────────────────────
+    def _send_chat(self):
+        text = self.chat_msg_var.get().strip()
+        if not text:
+            return
+        self.chat_msg_var.set("")
+        nick = self.nick_var.get().strip() or "Host"
+
+        # 로컬 즉시 표시
+        msg = {"type": "chat", "user": nick, "text": text,
+               "ts": datetime.datetime.now().strftime("%H:%M:%S")}
+        self.chat_messages.append(msg)
+        self._append_chat_room(msg)
+
+        # 서버로 전송 (비동기)
+        if self._server_ready:
+            threading.Thread(
+                target=self._api_post,
+                args=(f"/api/chat/{self.room_id}", {"user": nick, "text": text}),
+                daemon=True,
+            ).start()
+
+    def _sys_chat(self, text: str):
+        msg = {"type": "room.join", "user": "시스템",
+               "ts": datetime.datetime.now().strftime("%H:%M:%S")}
+        box = self.chat_room_box
+        box.configure(state="normal")
+        box.insert("end", f"  {text}\n", "system_c")
+        box.see("end")
+        box.configure(state="disabled")
+
+    # ── AI 대화 분석 → 파이프라인 ─────────────────────────────────
+    def _analyze_chat(self):
+        if self.proc and self.proc.poll() is None:
+            self._sys_chat("[!] 파이프라인이 이미 실행 중입니다.")
+            return
+
+        # 대화 내용 수집
+        human_msgs = [
+            m for m in self.chat_messages
+            if m.get("type") == "chat"
+        ]
+        if not human_msgs:
+            self._sys_chat("[!] 채팅 내용이 없습니다. 먼저 대화를 나눠보세요.")
+            return
+
+        # 대화를 CONTEXT.md로 포맷
+        lines = [
+            "# 채팅 대화 컨텍스트 (자동 수집)",
+            "이 문서는 사용자들이 채팅방에서 나눈 대화를 AI가 분석하기 위해 수집한 내용입니다.",
+            "이 대화를 전체적으로 이해하고, 참여자들이 원하는 작업 목표를 파악하여 실행하십시오.",
+            "CLARIFY 단계에서 이미 대화에서 답이 나온 항목은 다시 묻지 마십시오.\n",
+            "## 채팅 대화 내용\n",
+        ]
+        for m in human_msgs:
+            lines.append(f"[{m.get('ts','')}] {m.get('user','?')}: {m.get('text','')}")
+
+        lines += [
+            "\n## 분석 지시",
+            "위 대화에서 사람들이 원하는 작업이 무엇인지 파악하고,",
+            "구체적인 목표를 설정하여 파이프라인을 실행하십시오.",
+        ]
+        ctx = "\n".join(lines)
+
+        try:
+            with open(CONTEXT_FILE, "w", encoding="utf-8") as f:
+                f.write(ctx)
+        except Exception as e:
+            self._sys_chat(f"[!] 컨텍스트 저장 실패: {e}")
+            return
+
+        # 기존 상태 완료 처리
+        st = self._get_state()
+        if st:
+            try:
+                st["is_complete"] = True
+                with open(STATE_FILE, "w", encoding="utf-8") as f:
+                    json.dump(st, f, ensure_ascii=False)
+            except Exception:
+                pass
+
+        self._sys_chat("AI가 대화를 분석합니다... 파이프라인 시작")
+        goal = f"채팅 대화 분석 후 자동 실행 (메시지 {len(human_msgs)}건 수집)"
+        self._append(f"\n  🤖 대화 분석 → 파이프라인 시작\n", "user")
+        self._run(["-Goal", goal, "-Auto", "-GUI"])
+
+    # ── 채팅 로그 저장 ────────────────────────────────────────────
+    def _save_chat_log(self):
+        if not self.chat_messages:
+            self._sys_chat("저장할 대화가 없습니다.")
+            return
+
+        now = datetime.datetime.now()
+        fname = f"chat_{now.strftime('%Y%m%d_%H%M%S')}.md"
+        fpath = os.path.join(CHAT_LOG_DIR, fname)
+
+        participants = sorted(set(
+            m.get("user", "") for m in self.chat_messages
+            if m.get("type") == "chat"
+        ))
+
+        lines = [
+            "# 채팅 로그",
+            "",
+            f"**날짜:** {now.strftime('%Y-%m-%d %H:%M:%S')}  ",
+            f"**방:** {self.room_id}  ",
+            f"**서버:** {self._local_ip}:{SERVER_PORT}  ",
+            f"**참여자:** {', '.join(participants) or '없음'}  ",
+            "",
+            "---",
+            "",
+            "| 시간 | 사용자 | 내용 |",
+            "|------|--------|------|",
+        ]
+        for m in self.chat_messages:
+            mtype = m.get("type", "")
+            ts   = m.get("ts", "")
+            user = m.get("user", "")
+            text = m.get("text", "")
+            if mtype == "chat":
+                lines.append(f"| {ts} | {user} | {text} |")
+            elif mtype == "room.join":
+                lines.append(f"| {ts} | — | ✅ {user} 입장 |")
+            elif mtype == "room.leave":
+                lines.append(f"| {ts} | — | ❌ {user} 퇴장 |")
+
+        try:
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            self._sys_chat(f"로그 저장 완료: logs/chat/{fname}")
+        except Exception as e:
+            self._sys_chat(f"저장 실패: {e}")
+
+    # ══════════════════════════════════════════════════════════════
     # 우측 대시보드
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
     def _build_dashboard(self, parent):
-        panel = tk.Frame(parent, bg=BG_PANEL, width=308)
+        panel = tk.Frame(parent, bg=BG_PANEL, width=460)
         panel.pack(side="right", fill="y")
         panel.pack_propagate(False)
 
@@ -311,8 +721,8 @@ class App:
             lbl.pack(side="left", pady=3)
             return lbl
 
-        # ── A. 파이프라인 플로우차트 (Canvas) ────────────────
-        self.pipe_hdr_lbl = section_hdr("🔄 파이프라인  0 / 14")
+        # A. 파이프라인
+        self.pipe_hdr_lbl = section_hdr("🔄 파이프라인  0 / 13")
 
         pipe_wrap = tk.Frame(panel, bg=BG_PANEL)
         pipe_wrap.pack(fill="x")
@@ -328,14 +738,12 @@ class App:
         self.pipe_canvas.configure(yscrollcommand=pipe_csb.set)
         pipe_csb.pack(side="right", fill="y")
         self.pipe_canvas.pack(side="left", fill="both", expand=True)
-
-        # 마우스 휠 스크롤
         self.pipe_canvas.bind(
             "<MouseWheel>",
             lambda e: self.pipe_canvas.yview_scroll(-1 * (e.delta // 120), "units"),
         )
 
-        # ── 재개 / 중지 버튼 ──────────────────────────────────
+        # 재개/중지
         btn_row = tk.Frame(panel, bg=BG_PANEL, pady=6)
         btn_row.pack(fill="x", padx=8)
 
@@ -357,7 +765,7 @@ class App:
         )
         self.btn_stop.pack(side="right", fill="x", expand=True, padx=(4, 0))
 
-        # ── B. 처리 중 (스피너) ───────────────────────────────
+        # B. 처리 중
         section_hdr("⚡ 처리 중", FG_WARN)
         self.activity_box = tk.Text(
             panel, bg=BG_PANEL, font=self.fn_dash,
@@ -373,7 +781,7 @@ class App:
         ]:
             self.activity_box.tag_configure(n, foreground=c)
 
-        # ── C. 계획 요약 ──────────────────────────────────────
+        # C. 계획 요약
         section_hdr("📋 계획 요약")
         self.plan_box = tk.Text(
             panel, bg=BG_PANEL, fg=FG_GRAY, font=self.fn_dash,
@@ -382,7 +790,7 @@ class App:
         )
         self.plan_box.pack(fill="x")
 
-        # ── D. 작업 현황 ──────────────────────────────────────
+        # D. 작업 현황
         self.task_hdr_lbl = section_hdr("📊 작업 현황")
 
         task_wrap = tk.Frame(panel, bg=BG_PANEL)
@@ -408,12 +816,13 @@ class App:
         self.task_box.tag_configure(
             "bold_t", font=font.Font(family="Consolas", size=9, weight="bold"))
 
-    # ══════════════════════════════════════════════════════════
-    # 파이프라인 캔버스 그리기 (지그재그 2열 레이아웃)
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
+    # 파이프라인 캔버스 (지그재그 2열)
+    # ══════════════════════════════════════════════════════════════
     def _draw_pipeline_canvas(self, current: str):
         c = self.pipe_canvas
         c.delete("all")
+        self._node_rects = {}
 
         try:
             cur_idx = PIPELINE.index(current)
@@ -425,13 +834,11 @@ class App:
         total_h = ZZ_PAD_TOP * 2 + n_rows * NODE_H + (n_rows - 1) * ZZ_ROW_GAP
         c.configure(scrollregion=(0, 0, ZZ_TOTAL_W, total_h))
 
-        # 열 x 좌표
-        lx0 = ZZ_PAD_X                           # 왼쪽 열 왼쪽
-        lx1 = lx0 + ZZ_NODE_W                    # 왼쪽 열 오른쪽
-        rx0 = lx1 + ZZ_COL_GAP                   # 오른쪽 열 왼쪽
-        rx1 = rx0 + ZZ_NODE_W                    # 오른쪽 열 오른쪽
+        lx0 = ZZ_PAD_X
+        lx1 = lx0 + ZZ_NODE_W
+        rx0 = lx1 + ZZ_COL_GAP
+        rx1 = rx0 + ZZ_NODE_W
 
-        # 상태별 스타일 반환
         def get_style(idx, agent):
             badge_bg, accent, node_act_bg = AGENT_STYLE[agent]
             if cur_idx < 0 or idx > cur_idx:
@@ -448,7 +855,7 @@ class App:
                             badge_fill=badge_bg, badge_out="#3a5a3a",
                             badge_col="#4a8a4a", num_col="#3a6a3a",
                             accent=accent, arr_col="#3a6a3a")
-            else:  # current
+            else:
                 return dict(state="current",
                             node_fill=node_act_bg, node_outline=accent,
                             name_col=accent, desc_col=FG_MAIN,
@@ -456,7 +863,7 @@ class App:
                             badge_col=accent, num_col=accent,
                             accent=accent, arr_col=FG_WARN)
 
-        # ── 1단계: 화살표 먼저 그리기 (노드 아래에 위치) ──────
+        # 화살표 먼저
         for i, (name, agent, badge_txt, desc, short_name) in enumerate(PIPELINE_INFO):
             if i >= n - 1:
                 break
@@ -466,18 +873,16 @@ class App:
             sty   = get_style(i, agent)
 
             if col == 0:
-                # 수평 화살표: 왼쪽 열 → 오른쪽 열 (같은 행)
                 y_mid = y_row + NODE_H // 2
                 c.create_line(lx1, y_mid, rx0, y_mid,
                               fill=sty["arr_col"], width=1,
                               arrow="last", arrowshape=(6, 8, 3))
             else:
-                # 래핑 화살표: 오른쪽 열 하단 → L자 → 다음 행 왼쪽 열 상단
-                x_r_mid  = rx0 + ZZ_NODE_W // 2
-                x_l_mid  = lx0 + ZZ_NODE_W // 2
-                y_bot    = y_row + NODE_H
-                y_turn   = y_bot + ZZ_ROW_GAP // 2
-                y_next   = y_bot + ZZ_ROW_GAP
+                x_r_mid = rx0 + ZZ_NODE_W // 2
+                x_l_mid = lx0 + ZZ_NODE_W // 2
+                y_bot   = y_row + NODE_H
+                y_turn  = y_bot + ZZ_ROW_GAP // 2
+                y_next  = y_bot + ZZ_ROW_GAP
                 c.create_line(x_r_mid, y_bot,
                               x_r_mid, y_turn,
                               x_l_mid, y_turn,
@@ -485,7 +890,7 @@ class App:
                               fill=sty["arr_col"], width=1,
                               arrow="last", arrowshape=(6, 8, 3))
 
-        # ── 2단계: 노드 그리기 ─────────────────────────────────
+        # 노드
         for i, (name, agent, badge_txt, desc, short_name) in enumerate(PIPELINE_INFO):
             row  = i // 2
             col  = i % 2
@@ -497,15 +902,17 @@ class App:
             state = sty["state"]
 
             outline_w = 2 if state == "current" else 1
-            c.create_rectangle(x0, y0, x1, y1,
-                               fill=sty["node_fill"], outline=sty["node_outline"],
-                               width=outline_w)
+            rect_id = c.create_rectangle(
+                x0, y0, x1, y1,
+                fill=sty["node_fill"], outline=sty["node_outline"],
+                width=outline_w,
+            )
+            self._node_rects[name] = rect_id
 
             if state == "current":
                 c.create_rectangle(x0, y0, x0 + 3, y1,
                                    fill=sty["accent"], outline=sty["accent"])
 
-            # 에이전트 배지
             bx0, bx1 = x0 + 4, x0 + 26
             by0, by1 = y0 + 8, y1 - 8
             c.create_rectangle(bx0, by0, bx1, by1,
@@ -514,17 +921,13 @@ class App:
                           text=badge_txt, fill=sty["badge_col"],
                           font=self.fn_cv_badge, anchor="center")
 
-            # 짧은 단계명
             c.create_text(x0 + 30, y0 + 7,
                           text=short_name, fill=sty["name_col"],
                           font=self.fn_cv_name, anchor="nw")
-
-            # 설명 (짧게)
             c.create_text(x0 + 30, y0 + 25,
                           text=desc, fill=sty["desc_col"],
                           font=self.fn_cv_desc, anchor="nw")
 
-            # 번호 / 완료 아이콘
             if state == "done":
                 c.create_text(x1 - 4, y0 + 7,
                               text="✓", fill="#4a8a4a",
@@ -534,20 +937,18 @@ class App:
                               text=f"{i + 1:02d}", fill=sty["num_col"],
                               font=self.fn_cv_num, anchor="ne")
 
-            # PARALLEL_EXECUTE: 루프 힌트
             if name == "PARALLEL_EXECUTE":
                 c.create_text(x1 - 4, y1 - 8,
                               text="↻", fill="#585b70",
                               font=self.fn_cv_num, anchor="ne")
 
-        # 자동 스크롤: 현재 단계를 화면 중앙으로
         if cur_idx >= 0 and total_h > 0:
-            row_cur  = cur_idx // 2
+            row_cur   = cur_idx // 2
             y_mid_cur = ZZ_PAD_TOP + row_cur * (NODE_H + ZZ_ROW_GAP) + NODE_H // 2
             frac = max(0.0, (y_mid_cur - 120) / total_h)
             c.yview_moveto(frac)
 
-    # ── 파이프라인 캔버스 업데이트 ────────────────────────────
+    # ── 파이프라인 캔버스 업데이트 ───────────────────────────────
     def _update_pipeline_canvas(self):
         st  = self._get_state()
         sig = json.dumps(st) if st else ""
@@ -556,21 +957,39 @@ class App:
         self._state_cache = sig
 
         current = st.get("status", "") if st else ""
+        self._current_stage = current
         self._draw_pipeline_canvas(current)
 
         try:
             idx = PIPELINE.index(current)
         except ValueError:
             idx = 0
-        pct = int(idx / len(PIPELINE) * 100)
+        pct   = int(idx / len(PIPELINE) * 100)
         label = f"  🔄 파이프라인  {idx} / {len(PIPELINE)}  ({pct}%)"
         if st and st.get("is_complete"):
-            label = f"  🔄 파이프라인  완료 ✓"
+            label = "  🔄 파이프라인  완료 ✓"
         self.pipe_hdr_lbl.configure(text=label)
 
-    # ══════════════════════════════════════════════════════════
-    # 설정 저장/불러오기
-    # ══════════════════════════════════════════════════════════
+    # ── 파이프라인 애니메이션 (펄스) ──────────────────────────────
+    def _anim_pipeline(self):
+        if self._current_stage and self._current_stage in self._node_rects:
+            self._pulse_state = not self._pulse_state
+            rect_id = self._node_rects[self._current_stage]
+            agent = next(
+                (a for n, a, *_ in PIPELINE_INFO if n == self._current_stage),
+                "gemini",
+            )
+            _, accent, _ = AGENT_STYLE[agent]
+            try:
+                width = 3 if self._pulse_state else 1
+                self.pipe_canvas.itemconfig(rect_id, width=width)
+            except Exception:
+                pass
+        self.root.after(600, self._anim_pipeline)
+
+    # ══════════════════════════════════════════════════════════════
+    # 설정
+    # ══════════════════════════════════════════════════════════════
     def _load_config(self):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -579,14 +998,18 @@ class App:
             self.ws_var.set(ws)
             if ws:
                 self.lbl_ws_hint.configure(text="")
+            nick = cfg.get("nick", "Host")
+            self.nick_var.set(nick)
         except Exception:
             pass
 
     def _save_config(self):
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump({"last_workspace": self.ws_var.get()},
-                          f, ensure_ascii=False, indent=2)
+                json.dump({
+                    "last_workspace": self.ws_var.get(),
+                    "nick": self.nick_var.get(),
+                }, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
@@ -598,11 +1021,11 @@ class App:
             self.ws_var.set(path)
             self.lbl_ws_hint.configure(text="")
             self._save_config()
-            self._append(f"\n  📁 작업 폴더 설정: {path}\n", "system")
+            self._append(f"\n  📁 작업 폴더: {path}\n", "system")
 
-    # ══════════════════════════════════════════════════════════
-    # 채팅 출력
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
+    # 파이프라인 로그 (CENTER)
+    # ══════════════════════════════════════════════════════════════
     def _append(self, text, tag="gray"):
         self.chat.configure(state="normal")
         self.chat.insert("end", text, tag)
@@ -632,16 +1055,15 @@ class App:
         return line, "main"
 
     def _welcome(self):
-        self._append("━" * 62 + "\n", "gray")
-        self._append("  AI Manager  ·  Gemini(두뇌) + Claude(손)\n", "bold_system")
-        self._append("━" * 62 + "\n\n", "gray")
-        self._append("  ① 위의 📁 작업 폴더를 먼저 선택하세요.\n", "gray")
-        self._append("  ② 목표를 입력하면 AI들이 그 폴더 안에서 작업합니다.\n\n", "gray")
-        self._append("  우측 패널 — 파이프라인 플로우차트 · 계획 · 작업 현황\n\n", "gray")
+        self._append("━" * 58 + "\n", "gray")
+        self._append("  AI Nexus  ·  멀티유저 채팅 + 파이프라인 자동화\n", "bold_system")
+        self._append("━" * 58 + "\n\n", "gray")
+        self._append("  ← 좌측 채팅방에서 대화 후 [AI 분석] 버튼으로 시작\n", "gray")
+        self._append("  ↓ 아래 입력창에서 직접 목표를 입력해도 됩니다\n\n", "gray")
 
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
     # 폴링
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
     def _get_state(self):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
@@ -657,7 +1079,7 @@ class App:
             self.dot.configure(fg=FG_CLAUDE)
             status = f"실행 중 — {st['status'] if st else '?'}"
         elif st:
-            done   = st.get("is_complete", False)
+            done = st.get("is_complete", False)
             self.dot.configure(fg=FG_CLAUDE if done else FG_SYSTEM)
             status = f"{'완료' if done else '대기'} — {st.get('status','?')}"
         else:
@@ -673,7 +1095,7 @@ class App:
         elif st and not st.get("is_complete") and st.get("status") not in ("FINISH","FAILED",None):
             hint = "진행 중 프로젝트 있음 · 수정 지시 입력  또는  ▶ 재개"
         else:
-            hint = "목표를 입력하면 새 프로젝트를 시작합니다  (Enter로 전송)"
+            hint = "파이프라인 직접 목표 입력  (Enter로 전송)  —  또는 좌측 채팅에서 AI 분석 실행"
         self.lbl_hint.configure(text=hint)
 
         ws = self.ws_var.get().strip()
@@ -706,13 +1128,12 @@ class App:
         self.clarify_frame.pack(fill="x", before=self.entry.master.master)
 
         self._append("\n", "gray")
-        self._append("  ┌─ Gemini 질문 ─────────────────────────────────────────┐\n", "bold_gemini")
+        self._append("  ┌─ Gemini 질문 ──────────────────────────────────────┐\n", "bold_gemini")
         for ln in q.strip().splitlines():
             self._append(f"  │  {ln}\n", "gemini")
-        self._append("  └─ 번호별로 답변 후 빈 줄(Enter)로 완료 ───────────────────┘\n\n", "bold_gemini")
+        self._append("  └─ 번호별로 답변 후 빈 줄(Enter)로 완료 ──────────────┘\n\n", "bold_gemini")
 
     def _ensure_clarify_shown(self):
-        """subprocess 출력에서 CLARIFY 신호 감지 시 즉시 패널 표시"""
         if os.path.exists(CLARIFY_QUEST_FILE) and not self.clarify_mode:
             self._show_clarify()
 
@@ -736,9 +1157,6 @@ class App:
             self.clarify_lines.append(text)
             self._append(f"  → {text}\n", "user")
 
-    # ══════════════════════════════════════════════════════════
-    # 대시보드 업데이트 (3초 폴링)
-    # ══════════════════════════════════════════════════════════
     def _poll_tasks(self):
         try:
             self._update_pipeline_canvas()
@@ -856,9 +1274,9 @@ class App:
 
         self.task_box.configure(state="disabled")
 
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
     # 입력 / 버튼
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
     def _send(self):
         text = self.entry_var.get().strip()
         self.entry_var.set("")
@@ -907,13 +1325,12 @@ class App:
     def _force_new(self):
         self._show_wizard()
 
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
     # 의도 파악 위저드
-    # ══════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════
     def _show_wizard(self):
         if self.wizard_frame is None:
             self._build_wizard_panel()
-        # 필드 초기화
         self.wz_goal.delete("1.0", "end")
         self.wz_notes.delete("1.0", "end")
         self.wz_err_lbl.configure(text="")
@@ -941,7 +1358,6 @@ class App:
             self.wz_goal.focus()
             return
         self.wz_err_lbl.configure(text="")
-        # CONTEXT.md 작성
         try:
             ctx = self._compile_context(goal)
             with open(CONTEXT_FILE, "w", encoding="utf-8") as f:
@@ -949,7 +1365,6 @@ class App:
         except Exception as e:
             self.wz_err_lbl.configure(text=f"⚠  저장 오류: {e}")
             return
-        # 기존 프로젝트 완료 처리
         st = self._get_state()
         if st:
             try:
@@ -967,8 +1382,7 @@ class App:
         parts = [
             "# 프로젝트 컨텍스트 (사용자 사전 설정)",
             "이 문서는 사용자가 프로젝트 시작 전에 입력한 상세 컨텍스트입니다.",
-            "CLARIFY 단계에서 이 문서에 이미 답된 항목은 절대 다시 묻지 마십시오.",
-            "이 문서에 없는 항목만 필요 시 질문하십시오.\n",
+            "CLARIFY 단계에서 이 문서에 이미 답된 항목은 절대 다시 묻지 마십시오.\n",
         ]
         pt = self.wz_proj_type.get()
         if pt and pt != "AI가 판단":
@@ -996,7 +1410,6 @@ class App:
     def _build_wizard_panel(self):
         self.wizard_frame = tk.Frame(self.root, bg=BG_DARK)
 
-        # ── 헤더 ────────────────────────────────────────────
         hdr = tk.Frame(self.wizard_frame, bg=BG_TOP, height=54)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
@@ -1008,12 +1421,10 @@ class App:
                  fg=FG_GRAY, bg=BG_TOP,
                  font=self.fn_small).pack(side="left", padx=4)
 
-        # ── 스크롤 캔버스 영역 ────────────────────────────
         wrap = tk.Frame(self.wizard_frame, bg=BG_DARK)
         wrap.pack(fill="both", expand=True)
 
-        self.wz_canvas = tk.Canvas(wrap, bg=BG_DARK, bd=0,
-                                   highlightthickness=0)
+        self.wz_canvas = tk.Canvas(wrap, bg=BG_DARK, bd=0, highlightthickness=0)
         wz_sb = tk.Scrollbar(wrap, orient="vertical",
                              command=self.wz_canvas.yview,
                              bg=BG_DARK, troughcolor=BG_DARK,
@@ -1038,7 +1449,6 @@ class App:
 
         self._build_wizard_sections(inner)
 
-        # ── 푸터 ────────────────────────────────────────────
         ftr = tk.Frame(self.wizard_frame, bg=BG_TOP, height=58)
         ftr.pack(fill="x")
         ftr.pack_propagate(False)
@@ -1060,11 +1470,10 @@ class App:
                   side="right", padx=2, pady=10)
 
     def _build_wizard_sections(self, parent):
-        C = BG_PANEL   # 카드 배경
-        D = BG_DARK    # 섹션 배경
+        C = BG_PANEL
+        D = BG_DARK
 
         def sec_hdr(text):
-            """섹션 구분선 + 제목"""
             f = tk.Frame(parent, bg=D)
             f.pack(fill="x", padx=20, pady=(18, 4))
             tk.Label(f, text=text, fg=FG_GEMINI, bg=D,
@@ -1073,43 +1482,38 @@ class App:
                 side="left", fill="x", expand=True, padx=(10, 0), pady=9)
 
         def card():
-            """카드 프레임"""
             f = tk.Frame(parent, bg=C, padx=18, pady=12)
             f.pack(fill="x", padx=20, pady=(0, 2))
             return f
 
-        def hint(parent_f, text):
-            tk.Label(parent_f, text=text, fg=FG_GRAY, bg=C,
+        def hint(pf, text):
+            tk.Label(pf, text=text, fg=FG_GRAY, bg=C,
                      font=self.fn_small).pack(anchor="w", pady=(0, 8))
 
-        # ── 1. 목표 (필수) ────────────────────────────────
         sec_hdr("1 │ 프로젝트 목표  *필수")
         c1 = card()
-        hint(c1, "구체적일수록 AI가 정확하게 이해합니다. 예: 'FastAPI로 할일 관리 REST API 만들기, JWT 인증 포함'")
+        hint(c1, "구체적일수록 AI가 정확하게 이해합니다.")
         self.wz_goal = tk.Text(
             c1, bg=BG_ENTRY, fg=FG_MAIN, font=self.fn_ui,
             relief="flat", height=5, wrap="word",
-            insertbackground=FG_MAIN,
-            highlightthickness=1,
-            highlightbackground=FG_BORDER,
-            highlightcolor=FG_GEMINI, padx=10, pady=8)
+            insertbackground=FG_MAIN, highlightthickness=1,
+            highlightbackground=FG_BORDER, highlightcolor=FG_GEMINI,
+            padx=10, pady=8)
         self.wz_goal.pack(fill="x")
-        # Tab 키가 다음 위젯으로 이동하도록
         self.wz_goal.bind("<Tab>", lambda e: (
             self.wz_goal.tk_focusNext().focus(), "break")[1])
 
-        # ── 2. 프로젝트 유형 ────────────────────────────
         sec_hdr("2 │ 프로젝트 유형")
         c2 = card()
         self.wz_proj_type = tk.StringVar(value="AI가 판단")
         types = [
-            ("🌐 웹 애플리케이션",      "웹 애플리케이션 (프론트+백엔드)"),
-            ("⚙️ API / 백엔드 서버",    "REST API / 백엔드 서버"),
-            ("🖥️ 데스크톱 프로그램",    "데스크톱 프로그램"),
-            ("🤖 스크립트 / 자동화",    "스크립트 / 자동화 도구"),
-            ("📊 데이터 분석 / AI",     "데이터 분석 / AI 모델"),
-            ("📝 문서 / 콘텐츠 작성",   "문서 / 콘텐츠 작성"),
-            ("🔀 AI가 판단",            "AI가 판단"),
+            ("🌐 웹 애플리케이션",     "웹 애플리케이션 (프론트+백엔드)"),
+            ("⚙️ API / 백엔드 서버",   "REST API / 백엔드 서버"),
+            ("🖥️ 데스크톱 프로그램",   "데스크톱 프로그램"),
+            ("🤖 스크립트 / 자동화",   "스크립트 / 자동화 도구"),
+            ("📊 데이터 분석 / AI",    "데이터 분석 / AI 모델"),
+            ("📝 문서 / 콘텐츠",       "문서 / 콘텐츠 작성"),
+            ("🔀 AI가 판단",           "AI가 판단"),
         ]
         g2 = tk.Frame(c2, bg=C)
         g2.pack(fill="x")
@@ -1121,16 +1525,15 @@ class App:
                            ).grid(row=i // 3, column=i % 3, sticky="w",
                                   padx=10, pady=3)
 
-        # ── 3. 기술 스택 ────────────────────────────────
-        sec_hdr("3 │ 기술 스택 선호도  (복수 선택 가능)")
+        sec_hdr("3 │ 기술 스택  (복수 선택)")
         c3 = card()
-        hint(c3, "선택 안 하면 AI가 자동으로 가장 적합한 기술을 선택합니다")
+        hint(c3, "선택 안 하면 AI가 자동 선택")
         self.wz_tech = {}
         techs = [
-            "Python",                     "JavaScript / TypeScript",  "React / Next.js",
-            "FastAPI / Django / Flask",   "Node.js / Express",        "Vue / Svelte",
-            "SQL 데이터베이스",            "NoSQL (MongoDB 등)",       "Docker / 컨테이너",
-            "AI/ML (PyTorch, sklearn)",   "AWS / GCP / Azure SDK",    "AI가 선택",
+            "Python", "JavaScript / TypeScript", "React / Next.js",
+            "FastAPI / Django / Flask", "Node.js / Express", "Vue / Svelte",
+            "SQL 데이터베이스", "NoSQL (MongoDB 등)", "Docker / 컨테이너",
+            "AI/ML (PyTorch, sklearn)", "AWS / GCP / Azure SDK", "AI가 선택",
         ]
         g3 = tk.Frame(c3, bg=C)
         g3.pack(fill="x")
@@ -1144,17 +1547,16 @@ class App:
                            ).grid(row=i // 3, column=i % 3, sticky="w",
                                   padx=10, pady=3)
 
-        # ── 4. 결과물 형태 ──────────────────────────────
-        sec_hdr("4 │ 결과물 형태  (복수 선택 가능)")
+        sec_hdr("4 │ 결과물 형태  (복수 선택)")
         c4 = card()
         self.wz_output = {}
         outs = [
-            ("✅ 실행 가능한 소스 코드",          "실행 가능한 소스 코드"),
-            ("📄 API 명세 / 문서 (README 등)",    "API 명세 / 문서"),
-            ("🧪 테스트 코드 포함",               "테스트 코드 포함"),
-            ("🐳 배포 설정 (Dockerfile / CI)",    "배포 설정 파일"),
-            ("📖 사용 설명서",                    "사용 설명서"),
-            ("📊 분석 리포트 / 요약",             "분석 리포트"),
+            ("✅ 실행 가능한 소스 코드",       "실행 가능한 소스 코드"),
+            ("📄 API 명세 / 문서",              "API 명세 / 문서"),
+            ("🧪 테스트 코드 포함",             "테스트 코드 포함"),
+            ("🐳 배포 설정 (Dockerfile / CI)", "배포 설정 파일"),
+            ("📖 사용 설명서",                  "사용 설명서"),
+            ("📊 분석 리포트 / 요약",           "분석 리포트"),
         ]
         g4 = tk.Frame(c4, bg=C)
         g4.pack(fill="x")
@@ -1168,51 +1570,38 @@ class App:
                            ).grid(row=i // 2, column=i % 2, sticky="w",
                                   padx=10, pady=3)
 
-        # ── 5. 품질 수준 ────────────────────────────────
         sec_hdr("5 │ 품질 수준")
         c5 = card()
         self.wz_quality = tk.StringVar(value="균형")
         qualities = [
-            ("🚀 빠른 프로토타입",
-             "균형",   # 라디오 값
-             "빠른 프로토타입",
+            ("🚀 빠른 프로토타입", "빠른 프로토타입",
              "일단 동작하면 OK — 아이디어 확인용"),
-            ("⚖️ 균형  ✓ 권장",
-             "균형",
-             "균형",
+            ("⚖️ 균형  ✓ 권장",   "균형",
              "실제 사용 가능한 수준 — 대부분의 프로젝트에 적합"),
-            ("💎 프로덕션 품질",
-             "프로덕션 품질",
-             "프로덕션 품질",
+            ("💎 프로덕션 품질",   "프로덕션 품질",
              "테스트·보안·최적화까지 — 시간이 걸려도 OK"),
         ]
-        qualities = [
-            ("🚀 빠른 프로토타입",  "빠른 프로토타입",  "일단 동작하면 OK — 아이디어 확인용"),
-            ("⚖️ 균형  ✓ 권장",     "균형",             "실제 사용 가능한 수준 — 대부분의 프로젝트에 적합"),
-            ("💎 프로덕션 품질",    "프로덕션 품질",    "테스트·보안·최적화까지 — 시간이 걸려도 OK"),
-        ]
         for lbl, val, desc in qualities:
-            row_f = tk.Frame(c5, bg=C, pady=2)
-            row_f.pack(fill="x")
-            tk.Radiobutton(row_f, text=lbl, variable=self.wz_quality, value=val,
+            rf = tk.Frame(c5, bg=C, pady=2)
+            rf.pack(fill="x")
+            tk.Radiobutton(rf, text=lbl, variable=self.wz_quality, value=val,
                            bg=C, fg=FG_MAIN, selectcolor=BG_DARK,
                            activebackground=C, activeforeground=FG_GEMINI,
                            font=self.fn_small, cursor="hand2",
                            ).pack(side="left", padx=4)
-            tk.Label(row_f, text=f"   {desc}", fg=FG_GRAY, bg=C,
+            tk.Label(rf, text=f"   {desc}", fg=FG_GRAY, bg=C,
                      font=self.fn_small).pack(side="left")
 
-        # ── 6. 실행 환경 ────────────────────────────────
         sec_hdr("6 │ 실행 / 배포 환경")
         c6 = card()
         self.wz_env = tk.StringVar(value="AI가 결정")
         envs = [
-            ("Windows 로컬",         "Windows 로컬"),
-            ("Linux 서버",           "Linux 서버"),
-            ("Docker 컨테이너",      "Docker 컨테이너"),
-            ("클라우드 (AWS/GCP)",   "클라우드 (AWS / GCP / Azure)"),
-            ("Vercel / Netlify",     "Vercel / Netlify"),
-            ("AI가 결정",            "AI가 결정"),
+            ("Windows 로컬",       "Windows 로컬"),
+            ("Linux 서버",         "Linux 서버"),
+            ("Docker 컨테이너",    "Docker 컨테이너"),
+            ("클라우드 (AWS/GCP)", "클라우드 (AWS / GCP / Azure)"),
+            ("Vercel / Netlify",   "Vercel / Netlify"),
+            ("AI가 결정",          "AI가 결정"),
         ]
         g6 = tk.Frame(c6, bg=C)
         g6.pack(fill="x")
@@ -1224,7 +1613,6 @@ class App:
                            ).grid(row=i // 3, column=i % 3, sticky="w",
                                   padx=10, pady=3)
 
-        # ── 7. 언어 설정 ────────────────────────────────
         sec_hdr("7 │ 코드 언어 설정")
         c7 = card()
         self.wz_lang = tk.StringVar(value="한국어 주석 + 한국어 문서")
@@ -1242,22 +1630,22 @@ class App:
                            font=self.fn_small, cursor="hand2",
                            ).grid(row=0, column=i, sticky="w", padx=12, pady=3)
 
-        # ── 8. 추가 요구사항 ─────────────────────────────
-        sec_hdr("8 │ 추가 제약사항 / 특이사항  (선택)")
+        sec_hdr("8 │ 추가 제약사항  (선택)")
         c8 = card()
-        hint(c8, "피해야 할 것, 반드시 포함할 것, 참고 링크, 기존 코드 위치 등 자유롭게 작성")
+        hint(c8, "피해야 할 것, 반드시 포함할 것, 참고 링크 등 자유롭게")
         self.wz_notes = tk.Text(
             c8, bg=BG_ENTRY, fg=FG_MAIN, font=self.fn_small,
             relief="flat", height=4, wrap="word",
-            insertbackground=FG_MAIN,
-            highlightthickness=1,
-            highlightbackground=FG_BORDER,
-            highlightcolor=FG_GEMINI, padx=10, pady=8)
+            insertbackground=FG_MAIN, highlightthickness=1,
+            highlightbackground=FG_BORDER, highlightcolor=FG_GEMINI,
+            padx=10, pady=8)
         self.wz_notes.pack(fill="x")
 
-        # 여백
         tk.Frame(parent, bg=D, height=24).pack()
 
+    # ══════════════════════════════════════════════════════════════
+    # 파이프라인 실행
+    # ══════════════════════════════════════════════════════════════
     def _run(self, args: list):
         ws = self.ws_var.get().strip()
         if ws:
@@ -1282,7 +1670,6 @@ class App:
                 if tag == "__spinner__":
                     self.root.after(0, self._update_activity, line)
                 elif line is not None:
-                    # CLARIFY 대기 신호 즉시 감지 (폴링 800ms 대기 없이)
                     if "gui에서 답변을 기다리는 중" in line.lower():
                         self.root.after(200, self._ensure_clarify_shown)
                     self.root.after(0, self._append, line + "\n", tag)
@@ -1296,12 +1683,10 @@ class App:
         if len(parts) < 4:
             return
         agent, elapsed, max_t, spin = parts[0], int(parts[1]), int(parts[2]), parts[3]
-
         ratio   = min(elapsed / max_t, 1.0)
         bar_len = 18
         filled  = int(bar_len * ratio)
-
-        ag_tag = {"gemini": "ag_gem", "claude": "ag_cla", "codex": "ag_cod"}.get(agent, "ag_cla")
+        ag_tag  = {"gemini": "ag_gem", "claude": "ag_cla", "codex": "ag_cod"}.get(agent, "ag_cla")
 
         self.activity_box.configure(state="normal")
         self.activity_box.delete("1.0", "end")
@@ -1332,8 +1717,15 @@ class App:
 
     def _on_close(self):
         self._save_config()
+        if self.chat_messages:
+            try:
+                self._save_chat_log()
+            except Exception:
+                pass
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
+        if self.server_proc and self.server_proc.poll() is None:
+            self.server_proc.terminate()
         self.root.destroy()
 
     def run(self):
