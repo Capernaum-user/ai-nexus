@@ -612,26 +612,27 @@ class App:
         self.chat_msg_var.set("")
         nick = self.nick_var.get().strip() or "Host"
 
-        # 로컬 즉시 표시
-        msg = {"type": "chat", "user": nick, "text": text,
-               "ts": datetime.datetime.now().strftime("%H:%M:%S")}
-        self.chat_messages.append(msg)
-        self._append_chat_room(msg)
+        if not self._server_ready:
+            # 서버 없을 때만 로컬 직접 표시
+            msg = {"type": "chat", "user": nick, "text": text,
+                   "ts": datetime.datetime.now().strftime("%H:%M:%S")}
+            self.chat_messages.append(msg)
+            self._append_chat_room(msg)
+            return
 
-        # 서버로 전송 (비동기) — 응답 index로 offset 앞당겨 중복 표시 방지
-        if self._server_ready:
-            def _post():
-                res = self._api_post(
-                    f"/api/chat/{self.room_id}", {"user": nick, "text": text})
-                if res and isinstance(res.get("index"), int):
-                    next_offset = res["index"] + 1
-                    self.root.after(0, self._bump_offset, next_offset)
-            threading.Thread(target=_post, daemon=True).start()
+        # 서버가 있으면: 로컬 표시 X, POST → 즉시 강제 폴링으로 한 번만 표시
+        def _post_then_poll():
+            self._api_post(
+                f"/api/chat/{self.room_id}", {"user": nick, "text": text})
+            self.root.after(0, self._force_poll)
 
-    def _bump_offset(self, new_offset: int):
-        """서버에 저장된 내 메시지를 폴링이 다시 가져오지 않도록 offset 전진."""
-        if new_offset > self._chat_offset:
-            self._chat_offset = new_offset
+        threading.Thread(target=_post_then_poll, daemon=True).start()
+
+    def _force_poll(self):
+        """메시지 전송 후 즉시 한 번 폴링."""
+        if not self._chat_fetching:
+            self._chat_fetching = True
+            threading.Thread(target=self._fetch_messages_bg, daemon=True).start()
 
     def _sys_chat(self, text: str):
         msg = {"type": "room.join", "user": "시스템",
