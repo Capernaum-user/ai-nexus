@@ -22,6 +22,7 @@ QUEUE_FILE         = os.path.join(MANAGER_DIR, "TASK_QUEUE.json")
 CLARIFY_QUEST_FILE = os.path.join(MANAGER_DIR, "CLARIFY_QUESTIONS.md")
 CLARIFY_ANS_FILE   = os.path.join(MANAGER_DIR, "CLARIFICATIONS.md")
 CONFIG_FILE        = os.path.join(MANAGER_DIR, "gui_config.json")
+CONTEXT_FILE       = os.path.join(MANAGER_DIR, "CONTEXT.md")
 
 # ── 파이프라인 단계 정의 ──────────────────────────────────────
 PIPELINE = [
@@ -102,6 +103,20 @@ class App:
         self._plan_cache    = ""
         self._queue_cache   = ""
         self._state_cache   = ""
+
+        # 위저드 (lazy build)
+        self.wizard_frame   = None
+        self.wz_goal        = None
+        self.wz_notes       = None
+        self.wz_proj_type   = None
+        self.wz_quality     = None
+        self.wz_env         = None
+        self.wz_lang        = None
+        self.wz_tech        = {}
+        self.wz_output      = {}
+        self.wz_err_lbl     = None
+        self.wz_canvas      = None
+        self.wz_canvas_win  = None
 
         self._build_fonts()
         self._build_ui()
@@ -890,6 +905,51 @@ class App:
             self._append("\n  ■ 중지 요청됨\n", "warn")
 
     def _force_new(self):
+        self._show_wizard()
+
+    # ══════════════════════════════════════════════════════════
+    # 의도 파악 위저드
+    # ══════════════════════════════════════════════════════════
+    def _show_wizard(self):
+        if self.wizard_frame is None:
+            self._build_wizard_panel()
+        # 필드 초기화
+        self.wz_goal.delete("1.0", "end")
+        self.wz_notes.delete("1.0", "end")
+        self.wz_err_lbl.configure(text="")
+        self.wz_proj_type.set("AI가 판단")
+        self.wz_quality.set("균형")
+        self.wz_env.set("AI가 결정")
+        self.wz_lang.set("한국어 주석 + 한국어 문서")
+        for v in self.wz_tech.values():
+            v.set(False)
+        for v in self.wz_output.values():
+            v.set(False)
+        self.wz_canvas.yview_moveto(0)
+        self.wizard_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.wizard_frame.lift()
+        self.wz_goal.focus()
+
+    def _hide_wizard(self):
+        if self.wizard_frame:
+            self.wizard_frame.place_forget()
+
+    def _wizard_submit(self):
+        goal = self.wz_goal.get("1.0", "end").strip()
+        if not goal:
+            self.wz_err_lbl.configure(text="⚠  목표를 입력해주세요.")
+            self.wz_goal.focus()
+            return
+        self.wz_err_lbl.configure(text="")
+        # CONTEXT.md 작성
+        try:
+            ctx = self._compile_context(goal)
+            with open(CONTEXT_FILE, "w", encoding="utf-8") as f:
+                f.write(ctx)
+        except Exception as e:
+            self.wz_err_lbl.configure(text=f"⚠  저장 오류: {e}")
+            return
+        # 기존 프로젝트 완료 처리
         st = self._get_state()
         if st:
             try:
@@ -898,8 +958,305 @@ class App:
                     json.dump(st, f, ensure_ascii=False)
             except Exception:
                 pass
-        self._append("\n  ✦ 새 프로젝트 모드 — 목표를 입력하세요.\n", "system")
-        self.entry.focus()
+        self._hide_wizard()
+        short = goal[:70] + "..." if len(goal) > 70 else goal
+        self._append(f"\n  ▶ {short}\n", "user")
+        self._run(["-Goal", goal, "-Auto", "-GUI"])
+
+    def _compile_context(self, goal: str) -> str:
+        parts = [
+            "# 프로젝트 컨텍스트 (사용자 사전 설정)",
+            "이 문서는 사용자가 프로젝트 시작 전에 입력한 상세 컨텍스트입니다.",
+            "CLARIFY 단계에서 이 문서에 이미 답된 항목은 절대 다시 묻지 마십시오.",
+            "이 문서에 없는 항목만 필요 시 질문하십시오.\n",
+        ]
+        pt = self.wz_proj_type.get()
+        if pt and pt != "AI가 판단":
+            parts.append(f"## 프로젝트 유형\n{pt}")
+        tech = [k for k, v in self.wz_tech.items() if v.get() and k != "AI가 선택"]
+        if tech:
+            parts.append("## 선호 기술 스택\n" + "\n".join(f"- {t}" for t in tech))
+        outs = [k for k, v in self.wz_output.items() if v.get()]
+        if outs:
+            parts.append("## 결과물 형태\n" + "\n".join(f"- {o}" for o in outs))
+        q = self.wz_quality.get()
+        if q:
+            parts.append(f"## 품질 수준\n{q}")
+        env = self.wz_env.get()
+        if env and env != "AI가 결정":
+            parts.append(f"## 실행/배포 환경\n{env}")
+        lang = self.wz_lang.get()
+        if lang:
+            parts.append(f"## 언어 설정\n{lang}")
+        notes = self.wz_notes.get("1.0", "end").strip()
+        if notes:
+            parts.append(f"## 추가 제약사항\n{notes}")
+        return "\n\n".join(parts)
+
+    def _build_wizard_panel(self):
+        self.wizard_frame = tk.Frame(self.root, bg=BG_DARK)
+
+        # ── 헤더 ────────────────────────────────────────────
+        hdr = tk.Frame(self.wizard_frame, bg=BG_TOP, height=54)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="  🎯  새 프로젝트 설정",
+                 fg=FG_MAIN, bg=BG_TOP,
+                 font=self.fn_bold).pack(side="left", padx=12, pady=8)
+        tk.Label(hdr,
+                 text="처음에 많이 알려줄수록 AI가 중간에 멈추지 않고 끝까지 완성합니다",
+                 fg=FG_GRAY, bg=BG_TOP,
+                 font=self.fn_small).pack(side="left", padx=4)
+
+        # ── 스크롤 캔버스 영역 ────────────────────────────
+        wrap = tk.Frame(self.wizard_frame, bg=BG_DARK)
+        wrap.pack(fill="both", expand=True)
+
+        self.wz_canvas = tk.Canvas(wrap, bg=BG_DARK, bd=0,
+                                   highlightthickness=0)
+        wz_sb = tk.Scrollbar(wrap, orient="vertical",
+                             command=self.wz_canvas.yview,
+                             bg=BG_DARK, troughcolor=BG_DARK,
+                             activebackground=FG_BORDER, width=10)
+        self.wz_canvas.configure(yscrollcommand=wz_sb.set)
+        wz_sb.pack(side="right", fill="y")
+        self.wz_canvas.pack(side="left", fill="both", expand=True)
+
+        inner = tk.Frame(self.wz_canvas, bg=BG_DARK)
+        self.wz_canvas_win = self.wz_canvas.create_window(
+            (0, 0), window=inner, anchor="nw")
+
+        inner.bind("<Configure>",
+            lambda e: self.wz_canvas.configure(
+                scrollregion=self.wz_canvas.bbox("all")))
+        self.wz_canvas.bind("<Configure>",
+            lambda e: self.wz_canvas.itemconfig(
+                self.wz_canvas_win, width=e.width))
+        self.wz_canvas.bind("<MouseWheel>",
+            lambda e: self.wz_canvas.yview_scroll(
+                -1 * (e.delta // 120), "units"))
+
+        self._build_wizard_sections(inner)
+
+        # ── 푸터 ────────────────────────────────────────────
+        ftr = tk.Frame(self.wizard_frame, bg=BG_TOP, height=58)
+        ftr.pack(fill="x")
+        ftr.pack_propagate(False)
+        self.wz_err_lbl = tk.Label(ftr, text="", fg=FG_ERR, bg=BG_TOP,
+                                    font=self.fn_small)
+        self.wz_err_lbl.pack(side="left", padx=16)
+        tk.Button(ftr, text="  🚀  시작하기  ", command=self._wizard_submit,
+                  bg="#1a4a28", fg=FG_CLAUDE, relief="flat",
+                  font=self.fn_bold, padx=18, pady=8,
+                  cursor="hand2",
+                  activebackground="#2a6a38",
+                  activeforeground=FG_CLAUDE).pack(
+                  side="right", padx=6, pady=10)
+        tk.Button(ftr, text="취소", command=self._hide_wizard,
+                  bg="#313244", fg=FG_GRAY, relief="flat",
+                  font=self.fn_small, padx=14, pady=8,
+                  cursor="hand2",
+                  activebackground="#45475a").pack(
+                  side="right", padx=2, pady=10)
+
+    def _build_wizard_sections(self, parent):
+        C = BG_PANEL   # 카드 배경
+        D = BG_DARK    # 섹션 배경
+
+        def sec_hdr(text):
+            """섹션 구분선 + 제목"""
+            f = tk.Frame(parent, bg=D)
+            f.pack(fill="x", padx=20, pady=(18, 4))
+            tk.Label(f, text=text, fg=FG_GEMINI, bg=D,
+                     font=self.fn_bold).pack(side="left")
+            tk.Frame(f, bg=FG_BORDER, height=1).pack(
+                side="left", fill="x", expand=True, padx=(10, 0), pady=9)
+
+        def card():
+            """카드 프레임"""
+            f = tk.Frame(parent, bg=C, padx=18, pady=12)
+            f.pack(fill="x", padx=20, pady=(0, 2))
+            return f
+
+        def hint(parent_f, text):
+            tk.Label(parent_f, text=text, fg=FG_GRAY, bg=C,
+                     font=self.fn_small).pack(anchor="w", pady=(0, 8))
+
+        # ── 1. 목표 (필수) ────────────────────────────────
+        sec_hdr("1 │ 프로젝트 목표  *필수")
+        c1 = card()
+        hint(c1, "구체적일수록 AI가 정확하게 이해합니다. 예: 'FastAPI로 할일 관리 REST API 만들기, JWT 인증 포함'")
+        self.wz_goal = tk.Text(
+            c1, bg=BG_ENTRY, fg=FG_MAIN, font=self.fn_ui,
+            relief="flat", height=5, wrap="word",
+            insertbackground=FG_MAIN,
+            highlightthickness=1,
+            highlightbackground=FG_BORDER,
+            highlightcolor=FG_GEMINI, padx=10, pady=8)
+        self.wz_goal.pack(fill="x")
+        # Tab 키가 다음 위젯으로 이동하도록
+        self.wz_goal.bind("<Tab>", lambda e: (
+            self.wz_goal.tk_focusNext().focus(), "break")[1])
+
+        # ── 2. 프로젝트 유형 ────────────────────────────
+        sec_hdr("2 │ 프로젝트 유형")
+        c2 = card()
+        self.wz_proj_type = tk.StringVar(value="AI가 판단")
+        types = [
+            ("🌐 웹 애플리케이션",      "웹 애플리케이션 (프론트+백엔드)"),
+            ("⚙️ API / 백엔드 서버",    "REST API / 백엔드 서버"),
+            ("🖥️ 데스크톱 프로그램",    "데스크톱 프로그램"),
+            ("🤖 스크립트 / 자동화",    "스크립트 / 자동화 도구"),
+            ("📊 데이터 분석 / AI",     "데이터 분석 / AI 모델"),
+            ("📝 문서 / 콘텐츠 작성",   "문서 / 콘텐츠 작성"),
+            ("🔀 AI가 판단",            "AI가 판단"),
+        ]
+        g2 = tk.Frame(c2, bg=C)
+        g2.pack(fill="x")
+        for i, (lbl, val) in enumerate(types):
+            tk.Radiobutton(g2, text=lbl, variable=self.wz_proj_type, value=val,
+                           bg=C, fg=FG_MAIN, selectcolor=BG_DARK,
+                           activebackground=C, activeforeground=FG_GEMINI,
+                           font=self.fn_small, cursor="hand2",
+                           ).grid(row=i // 3, column=i % 3, sticky="w",
+                                  padx=10, pady=3)
+
+        # ── 3. 기술 스택 ────────────────────────────────
+        sec_hdr("3 │ 기술 스택 선호도  (복수 선택 가능)")
+        c3 = card()
+        hint(c3, "선택 안 하면 AI가 자동으로 가장 적합한 기술을 선택합니다")
+        self.wz_tech = {}
+        techs = [
+            "Python",                     "JavaScript / TypeScript",  "React / Next.js",
+            "FastAPI / Django / Flask",   "Node.js / Express",        "Vue / Svelte",
+            "SQL 데이터베이스",            "NoSQL (MongoDB 등)",       "Docker / 컨테이너",
+            "AI/ML (PyTorch, sklearn)",   "AWS / GCP / Azure SDK",    "AI가 선택",
+        ]
+        g3 = tk.Frame(c3, bg=C)
+        g3.pack(fill="x")
+        for i, name in enumerate(techs):
+            var = tk.BooleanVar(value=False)
+            self.wz_tech[name] = var
+            tk.Checkbutton(g3, text=name, variable=var,
+                           bg=C, fg=FG_MAIN, selectcolor=BG_DARK,
+                           activebackground=C, activeforeground=FG_GEMINI,
+                           font=self.fn_small, cursor="hand2",
+                           ).grid(row=i // 3, column=i % 3, sticky="w",
+                                  padx=10, pady=3)
+
+        # ── 4. 결과물 형태 ──────────────────────────────
+        sec_hdr("4 │ 결과물 형태  (복수 선택 가능)")
+        c4 = card()
+        self.wz_output = {}
+        outs = [
+            ("✅ 실행 가능한 소스 코드",          "실행 가능한 소스 코드"),
+            ("📄 API 명세 / 문서 (README 등)",    "API 명세 / 문서"),
+            ("🧪 테스트 코드 포함",               "테스트 코드 포함"),
+            ("🐳 배포 설정 (Dockerfile / CI)",    "배포 설정 파일"),
+            ("📖 사용 설명서",                    "사용 설명서"),
+            ("📊 분석 리포트 / 요약",             "분석 리포트"),
+        ]
+        g4 = tk.Frame(c4, bg=C)
+        g4.pack(fill="x")
+        for i, (lbl, val) in enumerate(outs):
+            var = tk.BooleanVar(value=False)
+            self.wz_output[val] = var
+            tk.Checkbutton(g4, text=lbl, variable=var,
+                           bg=C, fg=FG_MAIN, selectcolor=BG_DARK,
+                           activebackground=C, activeforeground=FG_GEMINI,
+                           font=self.fn_small, cursor="hand2",
+                           ).grid(row=i // 2, column=i % 2, sticky="w",
+                                  padx=10, pady=3)
+
+        # ── 5. 품질 수준 ────────────────────────────────
+        sec_hdr("5 │ 품질 수준")
+        c5 = card()
+        self.wz_quality = tk.StringVar(value="균형")
+        qualities = [
+            ("🚀 빠른 프로토타입",
+             "균형",   # 라디오 값
+             "빠른 프로토타입",
+             "일단 동작하면 OK — 아이디어 확인용"),
+            ("⚖️ 균형  ✓ 권장",
+             "균형",
+             "균형",
+             "실제 사용 가능한 수준 — 대부분의 프로젝트에 적합"),
+            ("💎 프로덕션 품질",
+             "프로덕션 품질",
+             "프로덕션 품질",
+             "테스트·보안·최적화까지 — 시간이 걸려도 OK"),
+        ]
+        qualities = [
+            ("🚀 빠른 프로토타입",  "빠른 프로토타입",  "일단 동작하면 OK — 아이디어 확인용"),
+            ("⚖️ 균형  ✓ 권장",     "균형",             "실제 사용 가능한 수준 — 대부분의 프로젝트에 적합"),
+            ("💎 프로덕션 품질",    "프로덕션 품질",    "테스트·보안·최적화까지 — 시간이 걸려도 OK"),
+        ]
+        for lbl, val, desc in qualities:
+            row_f = tk.Frame(c5, bg=C, pady=2)
+            row_f.pack(fill="x")
+            tk.Radiobutton(row_f, text=lbl, variable=self.wz_quality, value=val,
+                           bg=C, fg=FG_MAIN, selectcolor=BG_DARK,
+                           activebackground=C, activeforeground=FG_GEMINI,
+                           font=self.fn_small, cursor="hand2",
+                           ).pack(side="left", padx=4)
+            tk.Label(row_f, text=f"   {desc}", fg=FG_GRAY, bg=C,
+                     font=self.fn_small).pack(side="left")
+
+        # ── 6. 실행 환경 ────────────────────────────────
+        sec_hdr("6 │ 실행 / 배포 환경")
+        c6 = card()
+        self.wz_env = tk.StringVar(value="AI가 결정")
+        envs = [
+            ("Windows 로컬",         "Windows 로컬"),
+            ("Linux 서버",           "Linux 서버"),
+            ("Docker 컨테이너",      "Docker 컨테이너"),
+            ("클라우드 (AWS/GCP)",   "클라우드 (AWS / GCP / Azure)"),
+            ("Vercel / Netlify",     "Vercel / Netlify"),
+            ("AI가 결정",            "AI가 결정"),
+        ]
+        g6 = tk.Frame(c6, bg=C)
+        g6.pack(fill="x")
+        for i, (lbl, val) in enumerate(envs):
+            tk.Radiobutton(g6, text=lbl, variable=self.wz_env, value=val,
+                           bg=C, fg=FG_MAIN, selectcolor=BG_DARK,
+                           activebackground=C, activeforeground=FG_GEMINI,
+                           font=self.fn_small, cursor="hand2",
+                           ).grid(row=i // 3, column=i % 3, sticky="w",
+                                  padx=10, pady=3)
+
+        # ── 7. 언어 설정 ────────────────────────────────
+        sec_hdr("7 │ 코드 언어 설정")
+        c7 = card()
+        self.wz_lang = tk.StringVar(value="한국어 주석 + 한국어 문서")
+        langs = [
+            ("한국어 주석 + 한국어 문서", "한국어 주석 + 한국어 문서"),
+            ("영어 주석 + 영어 문서",     "영어 주석 + 영어 문서"),
+            ("영어 주석 + 한국어 문서",   "영어 주석 + 한국어 문서"),
+        ]
+        g7 = tk.Frame(c7, bg=C)
+        g7.pack(fill="x")
+        for i, (lbl, val) in enumerate(langs):
+            tk.Radiobutton(g7, text=lbl, variable=self.wz_lang, value=val,
+                           bg=C, fg=FG_MAIN, selectcolor=BG_DARK,
+                           activebackground=C, activeforeground=FG_GEMINI,
+                           font=self.fn_small, cursor="hand2",
+                           ).grid(row=0, column=i, sticky="w", padx=12, pady=3)
+
+        # ── 8. 추가 요구사항 ─────────────────────────────
+        sec_hdr("8 │ 추가 제약사항 / 특이사항  (선택)")
+        c8 = card()
+        hint(c8, "피해야 할 것, 반드시 포함할 것, 참고 링크, 기존 코드 위치 등 자유롭게 작성")
+        self.wz_notes = tk.Text(
+            c8, bg=BG_ENTRY, fg=FG_MAIN, font=self.fn_small,
+            relief="flat", height=4, wrap="word",
+            insertbackground=FG_MAIN,
+            highlightthickness=1,
+            highlightbackground=FG_BORDER,
+            highlightcolor=FG_GEMINI, padx=10, pady=8)
+        self.wz_notes.pack(fill="x")
+
+        # 여백
+        tk.Frame(parent, bg=D, height=24).pack()
 
     def _run(self, args: list):
         ws = self.ws_var.get().strip()

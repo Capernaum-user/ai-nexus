@@ -49,6 +49,7 @@ $script:CLARIFY_QUEST_FILE  = Join-Path $ROOT "CLARIFY_QUESTIONS.md"
 $script:RESEARCH_FILE       = Join-Path $ROOT "RESEARCH.md"
 $script:DEEP_RESEARCH_FILE  = Join-Path $ROOT "DEEP_RESEARCH.md"
 $script:HALLCHECK_FILE      = Join-Path $ROOT "HALLCHECK.md"
+$script:CONTEXT_FILE        = Join-Path $ROOT "CONTEXT.md"
 $script:PLAN_FILE      = Join-Path $ROOT "PLAN.md"
 $script:CRITERIA_FILE  = Join-Path $ROOT "ACCEPTANCE_CRITERIA.md"
 $script:REVISE_FILE    = Join-Path $ROOT "REVISIONS.md"
@@ -748,11 +749,20 @@ function Test-IntakeContaminated {
 # ── ① INTAKE ─────────────────────────────────────────────
 function Run-Intake {
     Write-Log "━━ INTAKE: 프로젝트 유형 분석 ━━"
-    $goal = Read-File $script:GOAL_FILE
+    $goal    = Read-File $script:GOAL_FILE
+    $context = if (Test-Path $script:CONTEXT_FILE) { Read-File $script:CONTEXT_FILE } else { "" }
+
+    $contextSection = if ($context -and $context.Trim() -ne "") {
+        @"
+
+[사용자 사전 설정 — 이미 결정된 사항. 불명확한 점 목록에 포함하지 말 것]
+$context
+"@
+    } else { "" }
 
     $prompt = @"
 너는 AI 프로젝트 관리 시스템의 총괄 관리자다.
-아래 [사용자 요청] 텍스트만 분석하라. 다른 정보는 없다.
+아래 [사용자 요청]과 [사용자 사전 설정]을 함께 분석하라.
 
 [절대 금지]
 - 파일 읽기, 디렉토리 탐색, grep, 웹 검색 등 외부 정보 조회 일체 금지
@@ -761,6 +771,7 @@ function Run-Intake {
 
 [사용자 요청]
 $goal
+$contextSection
 
 [출력 형식 — 반드시 아래 구분자 사이에만 내용을 작성]
 
@@ -821,24 +832,38 @@ $goal
 # ── ①-2 CLARIFY ──────────────────────────────────────────
 function Run-Clarify {
     Write-Log "━━ CLARIFY: 요구사항 구체화 질문 ━━"
-    $goal   = Read-File $script:GOAL_FILE
-    $intake = Read-File $script:INTAKE_FILE
+    $goal    = Read-File $script:GOAL_FILE
+    $intake  = Read-File $script:INTAKE_FILE
+    $context = if (Test-Path $script:CONTEXT_FILE) { Read-File $script:CONTEXT_FILE } else { "" }
+
+    $ctxBlock = if ($context -and $context.Trim() -ne "") {
+        @"
+
+[사용자 사전 설정 — 아래 항목은 이미 결정됨. 절대 다시 묻지 마라]
+$context
+
+위 사전 설정에 포함되지 않은 항목 중 결과물의 방향을 좌우하는 것만 질문하라.
+사전 설정이 충분히 구체적이어서 추가 질문이 불필요하다면
+===SKIP_CLARIFY=== 를 출력하고 이유를 한 줄로 설명하라.
+"@
+    } else { "" }
 
     $prompt = @"
 너는 Gemini 총괄 관리자다.
-사용자의 요청을 분석했다. 이제 프로젝트를 정확하게 만들기 위해 불명확한 부분을 사용자에게 질문해야 한다.
+사용자의 요청을 분석했다. 이제 프로젝트를 정확하게 만들기 위해 불명확한 부분을 확인해야 한다.
 
 사용자 요청:
 $goal
 
 분석 결과:
 $intake
+$ctxBlock
 
 규칙:
-- 디자인, UI/UX, 기능 범위, 기술 선택, 우선순위 등 결과물의 방향을 결정하는 중요한 항목만 질문한다.
-- 사용자가 명시적으로 언급하지 않은 핵심 결정 사항에 집중한다.
-- 질문은 5개 이하로 명확하고 구체적으로 작성한다.
-- 각 질문에는 선택 가능한 기본 옵션도 제시한다.
+- 디자인, UI/UX, 기능 범위, 기술 선택, 우선순위 등 결과물 방향을 결정하는 항목만 질문한다.
+- 사전 설정에 이미 답변된 사항은 절대 묻지 않는다.
+- 질문은 3개 이하로 명확하고 구체적으로 작성한다.
+- 각 질문에는 선택 가능한 기본 옵션을 제시한다.
 
 ===QUESTIONS_START===
 # 구체화가 필요한 사항
@@ -846,14 +871,23 @@ $intake
 1. (질문 내용)
    선택지: A) ... B) ... C) 직접 지정
 
-2. (질문 내용)
-   선택지: A) ... B) ... C) 직접 지정
-
-(계속...)
+(필요한 경우에만 2~3번 추가)
 ===QUESTIONS_END===
 "@
 
     $out = Invoke-AI -Agent "gemini" -Prompt $prompt -LogTag "clarify"
+
+    # 사전 설정이 충분한 경우 — 질문 없이 바로 통과
+    if ($out -match "===SKIP_CLARIFY===") {
+        Write-Log "CLARIFY: 사전 설정 충분 → 질문 생략, 자동 진행"
+        $skipReason = ($out -split "===SKIP_CLARIFY===")[-1].Trim()
+        $autoAnswer = "# 사전 설정으로 자동 구체화`n`n사전 컨텍스트가 충분하여 추가 질문 없이 진행합니다.`n`n$skipReason`n`n## 적용된 사전 설정`n$context"
+        Write-File $script:CLARIFY_FILE $autoAnswer
+        Write-Log "CLARIFY 완료 (자동) → RESEARCH"
+        Update-State @{ status="RESEARCH" }
+        return
+    }
+
     $questions = Get-Section $out "===QUESTIONS_START===" "===QUESTIONS_END==="
     $qText = if ($questions) { $questions } else { $out }
 
