@@ -658,23 +658,42 @@ class App:
             self._sys_chat("[!] 채팅 내용이 없습니다. 먼저 대화를 나눠보세요.")
             return
 
-        # 대화를 CONTEXT.md로 포맷
-        lines = [
-            "# 채팅 대화 컨텍스트 (자동 수집)",
-            "이 문서는 사용자들이 채팅방에서 나눈 대화를 AI가 분석하기 위해 수집한 내용입니다.",
-            "이 대화를 전체적으로 이해하고, 참여자들이 원하는 작업 목표를 파악하여 실행하십시오.",
-            "CLARIFY 단계에서 이미 대화에서 답이 나온 항목은 다시 묻지 마십시오.\n",
-            "## 채팅 대화 내용\n",
+        # ── 채팅에서 Goal 직접 추출 (AI에게 넘길 실제 텍스트) ──────
+        chat_lines = [
+            f'{m.get("user","?")}: {m.get("text","")}'
+            for m in human_msgs
         ]
-        for m in human_msgs:
-            lines.append(f"[{m.get('ts','')}] {m.get('user','?')}: {m.get('text','')}")
+        chat_block = "\n".join(chat_lines)
 
-        lines += [
-            "\n## 분석 지시",
-            "위 대화에서 사람들이 원하는 작업이 무엇인지 파악하고,",
-            "구체적인 목표를 설정하여 파이프라인을 실행하십시오.",
+        # Goal = 대화 전문 (Gemini가 애매한 placeholder를 무시하지 못하도록)
+        goal_full = chat_block
+        # -Goal 인자는 너무 길면 PS 오류 → 300자 요약본 사용, 전문은 CONTEXT.md에
+        goal_short = chat_block[:280] + ("..." if len(chat_block) > 280 else "")
+
+        # ── CONTEXT.md: 명확한 형식으로 저장 ────────────────────────
+        ctx_lines = [
+            "# [중요] 사용자 채팅 대화 — 이것이 실제 작업 요청입니다",
+            "",
+            "아래는 사용자들이 채팅방에서 나눈 대화 전문입니다.",
+            "이 대화 내용을 근거로 사용자가 원하는 것을 파악하고 실행하십시오.",
+            "절대로 대화 내용과 관계없는 주제를 상상하거나 추측하지 마십시오.",
+            "CLARIFY 단계에서 이미 대화에서 언급된 내용은 다시 묻지 마십시오.",
+            "",
+            "## 채팅 대화 전문",
+            "",
         ]
-        ctx = "\n".join(lines)
+        ctx_lines += [
+            f"  [{m.get('ts','')}] {m.get('user','?')}: {m.get('text','')}"
+            for m in human_msgs
+        ]
+        ctx_lines += [
+            "",
+            "## 반드시 지킬 지시사항",
+            "- 위 대화에서 언급된 내용만을 근거로 작업 목표를 결정하십시오.",
+            "- 대화에 없는 내용을 임의로 추가하거나 상상하지 마십시오.",
+            "- 위 대화가 불명확하면 CLARIFY에서 위 대화와 관련된 질문만 하십시오.",
+        ]
+        ctx = "\n".join(ctx_lines)
 
         try:
             with open(CONTEXT_FILE, "w", encoding="utf-8") as f:
@@ -693,10 +712,9 @@ class App:
             except Exception:
                 pass
 
-        self._sys_chat("AI가 대화를 분석합니다... 파이프라인 시작")
-        goal = f"채팅 대화 분석 후 자동 실행 (메시지 {len(human_msgs)}건 수집)"
+        self._sys_chat(f"AI가 대화를 분석합니다... 파이프라인 시작")
         self._append(f"\n  🤖 대화 분석 → 파이프라인 시작\n", "user")
-        self._run(["-Goal", goal, "-Auto", "-GUI"])
+        self._run(["-Goal", goal_short, "-Auto", "-GUI"])
 
     # ── 채팅 로그 저장 ────────────────────────────────────────────
     def _save_chat_log(self):
