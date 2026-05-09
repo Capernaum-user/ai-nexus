@@ -162,6 +162,7 @@ class App:
         self._poll_chat()
         self._anim_pipeline()
 
+        self.root.bind("<Escape>", self._dismiss_clarify)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ── 폰트 ──────────────────────────────────────────────────────
@@ -211,6 +212,12 @@ class App:
                   font=self.fn_small, padx=10, pady=4,
                   cursor="hand2", bd=0).pack(side="right", padx=4, pady=6)
 
+        tk.Button(topbar, text="🗑 초기화", command=self._reset_project,
+                  bg="#3a1a1a", fg=FG_ERR, activebackground="#5a2828",
+                  activeforeground=FG_ERR, relief="flat",
+                  font=self.fn_small, padx=10, pady=4,
+                  cursor="hand2", bd=0).pack(side="right", padx=0, pady=6)
+
         # ── 작업 폴더 바 ─────────────────────────────────────────
         wsbar = tk.Frame(self.root, bg=BG_WS, height=36)
         wsbar.pack(fill="x")
@@ -248,8 +255,9 @@ class App:
         tk.Frame(main_area, bg=FG_BORDER, width=1).pack(side="left", fill="y")
 
         # CENTER: 파이프라인 로그 (expand)
-        log_outer = tk.Frame(main_area, bg=BG_MAIN)
-        log_outer.pack(side="left", fill="both", expand=True)
+        self.log_outer = tk.Frame(main_area, bg=BG_MAIN)
+        self.log_outer.pack(side="left", fill="both", expand=True)
+        log_outer = self.log_outer
 
         self.chat = tk.Text(
             log_outer, bg=BG_MAIN, fg=FG_MAIN, font=self.fn_mono,
@@ -280,27 +288,41 @@ class App:
         # RIGHT: 대시보드 (460px)
         self._build_dashboard(main_area)
 
-        # ── CLARIFY 패널 ──────────────────────────────────────────
-        self.clarify_frame = tk.Frame(self.root, bg=BG_CLARIFY, pady=6)
+        # ── CLARIFY 패널 (CENTER log_outer 위 overlay) ────────────
+        # place()로 배치 → 채팅 입력창/레이아웃에 영향 없음
+        self.clarify_frame = tk.Frame(self.log_outer, bg=BG_CLARIFY,
+                                       bd=1, relief="flat")
 
-        tk.Label(self.clarify_frame,
-                 text="  Gemini 질문  —  번호별로 답변 후 빈 줄(Enter)로 완료",
-                 fg=FG_GEMINI, bg=BG_CLARIFY,
-                 font=self.fn_bold).pack(anchor="w", padx=10, pady=(4, 2))
+        # 헤더 행: 제목 + 건너뛰기/중지 버튼
+        cq_hdr = tk.Frame(self.clarify_frame, bg="#0d1f30", height=30)
+        cq_hdr.pack(fill="x")
+        cq_hdr.pack_propagate(False)
+        tk.Label(cq_hdr,
+                 text="  🤔 Gemini 질문  —  번호별 답변 후 빈 줄(Enter)로 완료  |  ESC로 건너뜀",
+                 fg=FG_GEMINI, bg="#0d1f30",
+                 font=self.fn_dash_b).pack(side="left", pady=5)
+        tk.Button(cq_hdr, text="■ 파이프라인 중지", command=self._stop_from_clarify,
+                  bg="#3a1a1a", fg=FG_ERR, relief="flat",
+                  font=self.fn_small, padx=8, pady=3,
+                  cursor="hand2").pack(side="right", padx=4, pady=4)
+        tk.Button(cq_hdr, text="⏩ 질문 건너뛰기", command=self._dismiss_clarify,
+                  bg="#1a2a3a", fg=FG_WARN, relief="flat",
+                  font=self.fn_small, padx=8, pady=3,
+                  cursor="hand2").pack(side="right", padx=0, pady=4)
 
         cq_wrap = tk.Frame(self.clarify_frame, bg=BG_CLARIFY)
-        cq_wrap.pack(fill="x", padx=10, pady=(0, 4))
+        cq_wrap.pack(fill="both", expand=True, padx=8, pady=(4, 6))
 
         self.clarify_q = tk.Text(
             cq_wrap, bg="#12122e", fg=FG_GEMINI,
-            font=self.fn_mono, height=10, state="disabled",
+            font=self.fn_mono, height=8, state="disabled",
             relief="flat", padx=10, pady=8, wrap="word",
         )
         cq_sb = tk.Scrollbar(cq_wrap, command=self.clarify_q.yview,
                               bg=BG_CLARIFY, troughcolor=BG_CLARIFY, width=8)
         self.clarify_q.configure(yscrollcommand=cq_sb.set)
         cq_sb.pack(side="right", fill="y")
-        self.clarify_q.pack(side="left", fill="x", expand=True)
+        self.clarify_q.pack(side="left", fill="both", expand=True)
 
         # ── 입력 영역 (clarify / 직접 목표 입력) ─────────────────
         input_outer = tk.Frame(self.root, bg=BG_DARK, pady=8)
@@ -1184,13 +1206,18 @@ class App:
         self.clarify_q.delete("1.0", "end")
         self.clarify_q.insert("end", q)
         self.clarify_q.configure(state="disabled")
-        self.clarify_frame.pack(fill="x", before=self.entry.master.master)
+
+        # log_outer 위에 overlay — 채팅 입력창과 레이아웃에 영향 없음
+        self.clarify_frame.place(in_=self.log_outer,
+                                  relx=0, rely=1.0, relwidth=1.0,
+                                  anchor="sw", y=0)
+        self.clarify_frame.lift()
 
         self._append("\n", "gray")
         self._append("  ┌─ Gemini 질문 ──────────────────────────────────────┐\n", "bold_gemini")
         for ln in q.strip().splitlines():
             self._append(f"  │  {ln}\n", "gemini")
-        self._append("  └─ 번호별로 답변 후 빈 줄(Enter)로 완료 ──────────────┘\n\n", "bold_gemini")
+        self._append("  └─ 번호별로 답변 후 빈 줄(Enter)로 완료  |  ESC = 건너뛰기 ──┘\n\n", "bold_gemini")
 
     def _ensure_clarify_shown(self):
         if os.path.exists(CLARIFY_QUEST_FILE) and not self.clarify_mode:
@@ -1199,7 +1226,30 @@ class App:
     def _hide_clarify(self):
         self.clarify_mode = False
         try:
-            self.clarify_frame.pack_forget()
+            self.clarify_frame.place_forget()
+        except Exception:
+            pass
+
+    def _dismiss_clarify(self, event=None):
+        """ESC 또는 '건너뛰기' — 빈 답변 기록 후 파이프라인 계속 진행."""
+        if not self.clarify_mode:
+            return
+        try:
+            with open(CLARIFY_ANS_FILE, "w", encoding="utf-8") as f:
+                f.write("(사용자가 질문을 건너뜀 — AI가 적절히 판단하여 계속 진행)")
+        except Exception:
+            pass
+        self._hide_clarify()
+        self._append("  ⏩ 질문 건너뜀 — AI가 자체 판단으로 계속 진행합니다.\n\n", "warn")
+
+    def _stop_from_clarify(self):
+        """Clarify 중 파이프라인 완전 중지."""
+        self._hide_clarify()
+        self._stop()
+        # 질문 파일 삭제해 폴링 루프 정리
+        try:
+            if os.path.exists(CLARIFY_QUEST_FILE):
+                os.remove(CLARIFY_QUEST_FILE)
         except Exception:
             pass
 
@@ -1773,6 +1823,59 @@ class App:
             self._append(f"  ✓ 완료  —  결과물 위치: {loc}\n\n", "system")
         else:
             self._append(f"  ✗ 종료 코드: {rc}\n\n", "error")
+
+    def _reset_project(self):
+        """현재 프로젝트 완전 초기화 — 런타임 파일 삭제 + 화면 리셋."""
+        # 실행 중인 파이프라인 중지
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+            self.proc = None
+
+        self._hide_clarify()
+
+        # 삭제할 런타임 파일 목록
+        runtime_files = [
+            STATE_FILE, PLAN_FILE, QUEUE_FILE,
+            CONTEXT_FILE, CLARIFY_QUEST_FILE, CLARIFY_ANS_FILE,
+            os.path.join(MANAGER_DIR, "GOAL.md"),
+            os.path.join(MANAGER_DIR, "INTAKE.md"),
+            os.path.join(MANAGER_DIR, "CONTEXT.md"),
+            os.path.join(MANAGER_DIR, "RESEARCH.md"),
+            os.path.join(MANAGER_DIR, "DEEP_RESEARCH.md"),
+            os.path.join(MANAGER_DIR, "HALLCHECK.md"),
+            os.path.join(MANAGER_DIR, "REVISIONS.md"),
+            os.path.join(MANAGER_DIR, "CLARIFY_QUESTIONS.md"),
+            os.path.join(MANAGER_DIR, "CLARIFICATIONS.md"),
+            os.path.join(MANAGER_DIR, "ACCEPTANCE_CRITERIA.md"),
+        ]
+        deleted = 0
+        for fpath in runtime_files:
+            try:
+                if os.path.exists(fpath):
+                    os.remove(fpath)
+                    deleted += 1
+            except Exception:
+                pass
+
+        # UI 상태 리셋
+        self._state_cache  = ""
+        self._plan_cache   = ""
+        self._queue_cache  = ""
+        self._current_stage = ""
+        self._node_rects   = {}
+
+        self._draw_pipeline_canvas("")
+        self._clear_activity()
+        self.pipe_hdr_lbl.configure(text="  🔄 파이프라인  0 / 13")
+        self.btn_send.configure(state="normal")
+
+        # 로그 클리어 후 환영 메시지
+        self.chat.configure(state="normal")
+        self.chat.delete("1.0", "end")
+        self.chat.configure(state="disabled")
+        self._welcome()
+        self._append(f"  🗑 초기화 완료  (파일 {deleted}개 삭제)\n", "system")
+        self._append("  새 프로젝트를 시작하세요.\n\n", "gray")
 
     def _on_close(self):
         self._save_config()
