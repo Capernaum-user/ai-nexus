@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ai-nexus · 멀티유저 채팅</title>
+<style>
+/* ─── reset & base ─────────────────────────────────────────────── */
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:       #1e1e2e;
+  --surface:  #2a2a3e;
+  --surface2: #313148;
+  --border:   #444466;
+  --accent:   #7c6af7;
+  --accent2:  #56d6a0;
+  --warn:     #f7a84a;
+  --err:      #f76a6a;
+  --txt:      #cdd6f4;
+  --txt2:     #908ca0;
+  --done:     #56d6a0;
+  --radius:   8px;
+  --font:     'Segoe UI', system-ui, sans-serif;
+}
+body{background:var(--bg);color:var(--txt);font-family:var(--font);
+     height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+/* ─── top bar ──────────────────────────────────────────────────── */
+#topbar{
+  display:flex;align-items:center;gap:12px;
+  padding:10px 16px;
+  background:var(--surface);
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+#topbar h1{font-size:1rem;font-weight:700;letter-spacing:.05em;
+           color:var(--accent)}
+#conn-badge{padding:2px 10px;border-radius:99px;font-size:.75rem;
+            background:#333;color:var(--txt2);margin-left:auto}
+#conn-badge.ok{background:#1a3a28;color:var(--accent2)}
+#conn-badge.err{background:#3a1a1a;color:var(--err)}
+
+/* ─── main layout ──────────────────────────────────────────────── */
+#main{display:flex;flex:1;overflow:hidden}
+
+/* ─── left: chat ───────────────────────────────────────────────── */
+#chat-panel{
+  display:flex;flex-direction:column;
+  width:58%;min-width:320px;
+  border-right:1px solid var(--border);
+}
+#room-bar{
+  padding:8px 12px;background:var(--surface2);
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:8px;font-size:.8rem;
+}
+#room-name{font-weight:600;color:var(--accent2)}
+#users-badge{color:var(--txt2)}
+
+#messages{flex:1;overflow-y:auto;padding:12px;display:flex;
+          flex-direction:column;gap:6px}
+
+/* intent banner */
+#intent-banner{
+  display:none;
+  margin:0 12px 8px;
+  padding:10px 14px;
+  background:#2a1e00;
+  border:1px solid var(--warn);
+  border-radius:var(--radius);
+  font-size:.85rem;
+  color:var(--warn);
+}
+#intent-banner span{color:var(--txt);margin-top:4px;display:block;font-size:.8rem}
+#intent-banner .intent-btns{margin-top:8px;display:flex;gap:8px}
+#intent-banner button{
+  padding:4px 14px;border:none;border-radius:4px;
+  cursor:pointer;font-size:.8rem;
+}
+#btn-intent-yes{background:var(--accent);color:#fff}
+#btn-intent-no{background:var(--surface2);color:var(--txt2)}
+
+.msg{padding:6px 10px;border-radius:var(--radius);max-width:90%;
+     word-break:break-word;font-size:.88rem;line-height:1.45}
+.msg.system{align-self:center;background:transparent;color:var(--txt2);
+            font-size:.78rem;font-style:italic}
+.msg.self{align-self:flex-end;background:var(--accent);color:#fff}
+.msg.other{align-self:flex-start;background:var(--surface2)}
+.msg .meta{font-size:.72rem;color:rgba(255,255,255,.45);margin-bottom:2px}
+.msg.other .meta{color:var(--txt2)}
+
+#input-row{
+  display:flex;gap:8px;padding:10px 12px;
+  border-top:1px solid var(--border);background:var(--surface);
+}
+#msg-input{
+  flex:1;padding:8px 12px;
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:var(--radius);color:var(--txt);font-size:.9rem;
+  outline:none;resize:none;height:40px;line-height:1.4;
+}
+#msg-input:focus{border-color:var(--accent)}
+#send-btn{
+  padding:8px 18px;background:var(--accent);color:#fff;
+  border:none;border-radius:var(--radius);cursor:pointer;font-size:.85rem;
+  white-space:nowrap;
+}
+#send-btn:hover{filter:brightness(1.15)}
+
+/* ─── right: pipeline ──────────────────────────────────────────── */
+#pipeline-panel{
+  display:flex;flex-direction:column;
+  flex:1;overflow:hidden;
+}
+#pipeline-header{
+  padding:8px 12px;background:var(--surface2);
+  border-bottom:1px solid var(--border);
+  font-size:.8rem;color:var(--txt2);
+  display:flex;align-items:center;gap:10px;
+}
+#pipeline-header span{font-weight:600;color:var(--txt)}
+#pipeline-status-badge{
+  margin-left:auto;padding:2px 10px;border-radius:99px;
+  font-size:.72rem;background:var(--surface);color:var(--txt2);
+}
+#pipeline-status-badge.running{background:#1a1e3a;color:var(--accent)}
+#pipeline-status-badge.done{background:#1a3a28;color:var(--accent2)}
+
+/* stage grid */
+#stages-grid{
+  display:grid;grid-template-columns:1fr 1fr;
+  gap:4px;padding:10px;
+  border-bottom:1px solid var(--border);
+}
+.stage-node{
+  padding:5px 8px;border-radius:5px;
+  background:var(--surface2);border:1px solid var(--border);
+  font-size:.75rem;display:flex;align-items:center;gap:6px;
+  transition:all .25s;
+}
+.stage-node .dot{width:8px;height:8px;border-radius:50%;
+                 background:var(--border);flex-shrink:0}
+.stage-node.active{border-color:var(--accent);background:#252040}
+.stage-node.active .dot{background:var(--accent);
+  box-shadow:0 0 6px var(--accent);animation:pulse 1s infinite}
+.stage-node.done{border-color:var(--accent2);background:#1a2e22}
+.stage-node.done .dot{background:var(--accent2)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.stage-name{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stage-ai{color:var(--txt2);font-size:.68rem}
+
+/* start pipeline form */
+#start-form{
+  padding:10px 12px;border-bottom:1px solid var(--border);
+  display:flex;gap:8px;
+}
+#goal-input{
+  flex:1;padding:6px 10px;
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:var(--radius);color:var(--txt);font-size:.85rem;outline:none;
+}
+#goal-input:focus{border-color:var(--accent)}
+#start-btn{
+  padding:6px 16px;background:var(--accent2);color:#111;
+  border:none;border-radius:var(--radius);cursor:pointer;font-size:.8rem;
+  font-weight:600;white-space:nowrap;
+}
+#start-btn:disabled{opacity:.45;cursor:default}
+
+/* log */
+#log-box{
+  flex:1;overflow-y:auto;padding:8px 10px;
+  font-family:'Cascadia Code','Consolas',monospace;font-size:.75rem;
+  line-height:1.6;color:#a0aec0;
+}
+.log-line{margin-bottom:1px}
+.log-line.hi{color:var(--accent2)}
+.log-line.err{color:var(--err)}
+.log-ts{color:#555;margin-right:6px}
+
+/* ─── join overlay ──────────────────────────────────────────────── */
+#join-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.7);
+  display:flex;align-items:center;justify-content:center;
+  z-index:100;
+}
+#join-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:12px;padding:32px 36px;width:340px;
+  display:flex;flex-direction:column;gap:16px;
+}
+#join-card h2{font-size:1.1rem;color:var(--accent)}
+#join-card label{font-size:.8rem;color:var(--txt2);margin-bottom:4px;display:block}
+#join-card input{
+  width:100%;padding:8px 12px;
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:var(--radius);color:var(--txt);font-size:.9rem;outline:none;
+}
+#join-card input:focus{border-color:var(--accent)}
+#join-btn{
+  padding:10px;background:var(--accent);color:#fff;
+  border:none;border-radius:var(--radius);cursor:pointer;font-weight:600;
+  font-size:.9rem;
+}
+#join-btn:hover{filter:brightness(1.1)}
+#join-err{color:var(--err);font-size:.8rem;display:none}
+
+/* scrollbar */
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+</style>
+</head>
+<body>
+
+<!-- join overlay -->
+<div id="join-overlay">
+  <div id="join-card">
+    <h2>✦ ai-nexus</h2>
+    <div>
+      <label>방 이름</label>
+      <input id="room-input" placeholder="예: general" value="general">
+    </div>
+    <div>
+      <label>닉네임</label>
+      <input id="nick-input" placeholder="예: Alice">
+    </div>
+    <p id="join-err">닉네임을 입력해 주세요.</p>
+    <button id="join-btn">입장하기</button>
+  </div>
+</div>
+
+<!-- top bar -->
+<div id="topbar">
+  <h1>✦ ai-nexus</h1>
+  <span id="conn-badge">연결 중...</span>
+</div>
+
+<!-- main -->
+<div id="main">
+
+  <!-- chat panel -->
+  <div id="chat-panel">
+    <div id="room-bar">
+      <span>방: </span><span id="room-name">—</span>
+      <span id="users-badge"></span>
+    </div>
+
+    <!-- intent banner -->
+    <div id="intent-banner">
+      <strong>🤖 작업 요청 감지됨</strong>
+      <span id="intent-snippet"></span>
+      <div class="intent-btns">
+        <button id="btn-intent-yes">파이프라인 시작</button>
+        <button id="btn-intent-no">닫기</button>
+      </div>
+    </div>
+
+    <div id="messages"></div>
+
+    <div id="input-row">
+      <textarea id="msg-input" placeholder="메시지를 입력하세요… (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
+      <button id="send-btn">전송</button>
+    </div>
+  </div>
+
+  <!-- pipeline panel -->
+  <div id="pipeline-panel">
+    <div id="pipeline-header">
+      <span>파이프라인</span>
+      <span id="pipeline-status-badge">대기 중</span>
+    </div>
+
+    <div id="stages-grid"></div>
+
+    <div id="start-form">
+      <input id="goal-input" placeholder="목표를 직접 입력 후 실행…">
+      <button id="start-btn">▶ 시작</button>
+    </div>
+
+    <div id="log-box"></div>
+  </div>
+
+</div>
+
+<script>
+// ─── state ──────────────────────────────────────────────────────────────────
+const STAGES = [
+  ["INTAKE",           "Gem"],
+  ["CLARIFY",          "Gem"],
+  ["RESEARCH",         "Gem"],
+  ["DEEP_RESEARCH",    "Gem"],
+  ["HALLCHECK",        "Cox"],
+  ["PLAN",             "Gem"],
+  ["PARALLEL_EXECUTE", "Mgr"],
+  ["INTEGRATE",        "Cox"],
+  ["CODEX_REVIEW",     "Cox"],
+  ["GEMINI_CHECK",     "Gem"],
+  ["CLAUDE_RECHECK",   "Cld"],
+  ["INT_REVIEW",       "Mgr"],
+  ["FINISH",           "—"],
+];
+
+let ws = null;
+let myNick = "";
+let myRoom = "";
+let detectedGoal = "";
+let pipelineRunning = false;
+
+// ─── DOM refs ────────────────────────────────────────────────────────────────
+const joinOverlay   = document.getElementById("join-overlay");
+const joinBtn       = document.getElementById("join-btn");
+const joinErr       = document.getElementById("join-err");
+const roomInput     = document.getElementById("room-input");
+const nickInput     = document.getElementById("nick-input");
+
+const connBadge     = document.getElementById("conn-badge");
+const roomName      = document.getElementById("room-name");
+const usersBadge    = document.getElementById("users-badge");
+
+const messagesEl    = document.getElementById("messages");
+const intentBanner  = document.getElementById("intent-banner");
+const intentSnippet = document.getElementById("intent-snippet");
+const btnIntentYes  = document.getElementById("btn-intent-yes");
+const btnIntentNo   = document.getElementById("btn-intent-no");
+const msgInput      = document.getElementById("msg-input");
+const sendBtn       = document.getElementById("send-btn");
+
+const stagesGrid    = document.getElementById("stages-grid");
+const statusBadge   = document.getElementById("pipeline-status-badge");
+const goalInput     = document.getElementById("goal-input");
+const startBtn      = document.getElementById("start-btn");
+const logBox        = document.getElementById("log-box");
+
+// ─── build stage nodes ────────────────────────────────────────────────────────
+STAGES.forEach(([name, ai]) => {
+  const node = document.createElement("div");
+  node.className = "stage-node";
+  node.id = "stage-" + name;
+  node.innerHTML = `<div class="dot"></div>
+    <span class="stage-name">${name.replace("_"," ")}</span>
+    <span class="stage-ai">${ai}</span>`;
+  stagesGrid.appendChild(node);
+});
+
+function updateStages(state) {
+  const current = (state.status || "").toUpperCase();
+  const idx = STAGES.findIndex(([n]) => n === current);
+  STAGES.forEach(([name], i) => {
+    const el = document.getElementById("stage-" + name);
+    if (!el) return;
+    el.classList.remove("active","done");
+    if (i < idx) el.classList.add("done");
+    else if (i === idx) el.classList.add("active");
+  });
+  if (current === "FINISH") {
+    STAGES.forEach(([name]) => {
+      const el = document.getElementById("stage-" + name);
+      if (el) { el.classList.remove("active"); el.classList.add("done"); }
+    });
+  }
+}
+
+// ─── WebSocket ────────────────────────────────────────────────────────────────
+function connect(room, nick) {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const url = `${proto}://${location.host}/ws/${encodeURIComponent(room)}/${encodeURIComponent(nick)}`;
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    connBadge.textContent = "연결됨";
+    connBadge.className = "ok";
+    myRoom = room; myNick = nick;
+    roomName.textContent = room;
+  };
+
+  ws.onclose = () => {
+    connBadge.textContent = "연결 끊김";
+    connBadge.className = "err";
+    setTimeout(() => connect(myRoom, myNick), 3000);
+  };
+
+  ws.onerror = () => {
+    connBadge.textContent = "오류";
+    connBadge.className = "err";
+  };
+
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    handleMsg(msg);
+  };
+}
+
+function handleMsg(msg) {
+  switch (msg.type) {
+    case "chat":
+      appendChat(msg);
+      break;
+    case "room.join":
+      appendSystem(`${msg.user} 님이 입장했습니다.`);
+      break;
+    case "room.leave":
+      appendSystem(`${msg.user} 님이 나갔습니다.`);
+      break;
+    case "intent.detected":
+      showIntentBanner(msg);
+      break;
+    case "pipeline.start":
+      pipelineRunning = true;
+      startBtn.disabled = true;
+      statusBadge.textContent = "실행 중";
+      statusBadge.className = "running";
+      appendLog(`▶ 파이프라인 시작: ${msg.goal}`, "hi");
+      break;
+    case "pipeline.log":
+      appendLog(msg.text);
+      break;
+    case "pipeline.state":
+      updateStages(msg.state || {});
+      break;
+    case "pipeline.done":
+      pipelineRunning = false;
+      startBtn.disabled = false;
+      statusBadge.textContent = "완료";
+      statusBadge.className = "done";
+      appendLog("✓ 파이프라인 완료", "hi");
+      if (msg.state) updateStages(msg.state);
+      break;
+    case "error":
+      appendLog(msg.text, "err");
+      break;
+  }
+}
+
+// ─── chat rendering ───────────────────────────────────────────────────────────
+function appendChat(msg) {
+  const isSelf = msg.user === myNick;
+  const el = document.createElement("div");
+  el.className = "msg " + (isSelf ? "self" : "other");
+  el.innerHTML = `<div class="meta">${isSelf ? "" : escHtml(msg.user) + " · "}${msg.ts}</div>
+    ${escHtml(msg.text)}`;
+  messagesEl.appendChild(el);
+  scrollBottom(messagesEl);
+}
+
+function appendSystem(text) {
+  const el = document.createElement("div");
+  el.className = "msg system";
+  el.textContent = text;
+  messagesEl.appendChild(el);
+  scrollBottom(messagesEl);
+}
+
+// ─── intent banner ────────────────────────────────────────────────────────────
+function showIntentBanner(msg) {
+  detectedGoal = msg.full_text;
+  intentSnippet.textContent = `"${msg.snippet}"`;
+  intentBanner.style.display = "block";
+}
+
+btnIntentYes.onclick = () => {
+  intentBanner.style.display = "none";
+  if (!pipelineRunning && detectedGoal) {
+    sendWs({ type: "pipeline.start", goal: detectedGoal });
+  }
+};
+btnIntentNo.onclick = () => { intentBanner.style.display = "none"; };
+
+// ─── log rendering ────────────────────────────────────────────────────────────
+function appendLog(text, cls) {
+  const el = document.createElement("div");
+  el.className = "log-line" + (cls ? " " + cls : "");
+  const now = new Date();
+  const ts = now.toTimeString().slice(0,8);
+  el.innerHTML = `<span class="log-ts">${ts}</span>${escHtml(text)}`;
+  logBox.appendChild(el);
+  scrollBottom(logBox);
+}
+
+// ─── send chat ────────────────────────────────────────────────────────────────
+function sendChat() {
+  const text = msgInput.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  sendWs({ type: "chat", text });
+  msgInput.value = "";
+  msgInput.style.height = "40px";
+}
+
+msgInput.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+});
+sendBtn.onclick = sendChat;
+
+msgInput.addEventListener("input", () => {
+  msgInput.style.height = "40px";
+  msgInput.style.height = Math.min(msgInput.scrollHeight, 120) + "px";
+});
+
+// ─── start pipeline manually ──────────────────────────────────────────────────
+startBtn.onclick = () => {
+  const goal = goalInput.value.trim();
+  if (!goal) return;
+  if (pipelineRunning) return;
+  sendWs({ type: "pipeline.start", goal });
+  goalInput.value = "";
+};
+
+goalInput.addEventListener("keydown", e => {
+  if (e.key === "Enter") startBtn.click();
+});
+
+// ─── join ─────────────────────────────────────────────────────────────────────
+joinBtn.onclick = doJoin;
+[roomInput, nickInput].forEach(el =>
+  el.addEventListener("keydown", e => { if (e.key === "Enter") doJoin(); })
+);
+
+function doJoin() {
+  const room = roomInput.value.trim() || "general";
+  const nick = nickInput.value.trim();
+  if (!nick) { joinErr.style.display = "block"; return; }
+  joinErr.style.display = "none";
+  joinOverlay.style.display = "none";
+  connect(room, nick);
+}
+
+// ─── utils ────────────────────────────────────────────────────────────────────
+function sendWs(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify(obj));
+}
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+function scrollBottom(el) { el.scrollTop = el.scrollHeight; }
+
+// focus nick on load
+window.onload = () => nickInput.focus();
+</script>
+</body>
+</html>
