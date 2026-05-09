@@ -121,6 +121,8 @@ class App:
         self.server_proc    = None
         self._server_ready  = False
         self._local_ip      = self._get_local_ip()
+        self._chat_fetching = False   # 중복 요청 방지 플래그
+        self._users_fetching = False
 
         # 파이프라인 애니메이션
         self._node_rects    = {}
@@ -500,23 +502,32 @@ class App:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            self.root.after(2500, self._check_server_ready)
+            # 서버 준비 확인은 백그라운드에서 (메인 스레드 블로킹 방지)
+            self.root.after(2000, self._check_server_ready)
         except Exception as e:
             self.srv_lbl.configure(text=f"  서버 오류: {e}", fg=FG_ERR)
 
     def _check_server_ready(self):
-        try:
-            urllib.request.urlopen(
-                f"http://localhost:{SERVER_PORT}/api/state", timeout=1)
-            self._server_ready = True
-            ip_txt = f"  {self._local_ip}:{SERVER_PORT}  (브라우저 접속 가능)"
-            self.srv_lbl.configure(text=ip_txt, fg=FG_CLAUDE)
-            self.server_badge.configure(
-                text=f"● 서버 ON  {self._local_ip}:{SERVER_PORT}", fg=FG_CLAUDE)
-            self._sys_chat(f"서버 시작  —  {self._local_ip}:{SERVER_PORT}")
-            self._sys_chat("브라우저에서 접속하거나 프로그램을 여러 명이 열면 채팅 가능")
-        except Exception:
-            self.root.after(1500, self._check_server_ready)
+        """백그라운드 스레드에서 서버 준비 확인."""
+        def _bg():
+            for _ in range(20):   # 최대 20회 재시도
+                try:
+                    urllib.request.urlopen(
+                        f"http://localhost:{SERVER_PORT}/api/state", timeout=1)
+                    self.root.after(0, self._on_server_ready)
+                    return
+                except Exception:
+                    time.sleep(1.5)
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _on_server_ready(self):
+        self._server_ready = True
+        ip_txt = f"  {self._local_ip}:{SERVER_PORT}  (브라우저 접속 가능)"
+        self.srv_lbl.configure(text=ip_txt, fg=FG_CLAUDE)
+        self.server_badge.configure(
+            text=f"● 서버 ON  {self._local_ip}:{SERVER_PORT}", fg=FG_CLAUDE)
+        self._sys_chat(f"서버 시작  —  {self._local_ip}:{SERVER_PORT}")
+        self._sys_chat("브라우저에서 접속하거나 프로그램을 여러 명이 열면 채팅 가능")
 
     def _api_get(self, path: str):
         try:
@@ -540,31 +551,53 @@ class App:
         except Exception:
             return None
 
-    # ── 채팅 폴링 ────────────────────────────────────────────────
+    # ── 채팅 폴링 (메인 스레드는 스케줄만, 실제 HTTP는 백그라운드) ──
     def _poll_chat(self):
         if self._server_ready:
-            self._fetch_new_messages()
-            self._fetch_users()
-        self.root.after(500, self._poll_chat)
+            if not self._chat_fetching:
+                self._chat_fetching = True
+                threading.Thread(target=self._fetch_messages_bg,
+                                 daemon=True).start()
+        self.root.after(600, self._poll_chat)
 
-    def _fetch_new_messages(self):
-        res = self._api_get(
-            f"/api/messages/{self.room_id}?after={self._chat_offset}")
-        if not res:
-            return
-        new_msgs = res.get("messages", [])
-        total    = res.get("total", self._chat_offset)
+    def _fetch_messages_bg(self):
+        """백그라운드: 메시지 + 유저 목록 동시 조회."""
+        offset = self._chat_offset
+        try:
+            # 메시지
+            url = f"http://localhost:{SERVER_PORT}/api/messages/{self.room_id}?after={offset}"
+            with urllib.request.urlopen(url, timeout=1) as r:
+                res = json.loads(r.read())
+            new_msgs = res.get("messages", [])
+            total    = res.get("total", offset)
+            if new_msgs:
+                self.root.after(0, self._on_new_messages, new_msgs, total)
+            else:
+                self._chat_offset = total
+        except Exception:
+            pass
+
+        try:
+            # 유저 목록 (느려도 UI 안 막음)
+            url2 = f"http://localhost:{SERVER_PORT}/api/users/{self.room_id}"
+            with urllib.request.urlopen(url2, timeout=1) as r:
+                res2 = json.loads(r.read())
+            users = res2.get("users", [])
+            self.root.after(0, self._on_users_update, users)
+        except Exception:
+            pass
+
+        self._chat_fetching = False
+
+    def _on_new_messages(self, new_msgs: list, total: int):
+        """메인 스레드: 새 메시지를 UI에 반영."""
         for msg in new_msgs:
             self.chat_messages.append(msg)
             self._append_chat_room(msg)
         self._chat_offset = total
 
-    def _fetch_users(self):
-        res = self._api_get(f"/api/users/{self.room_id}")
-        if not res:
-            return
-        users = res.get("users", [])
-        # 호스트 자신은 서버에 없어도 표시
+    def _on_users_update(self, users: list):
+        """메인 스레드: 유저 목록 라벨 갱신."""
         if users:
             self.chat_users_lbl.configure(
                 text=f"• {len(users)}명: {', '.join(users)}")
