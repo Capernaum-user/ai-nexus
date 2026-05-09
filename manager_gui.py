@@ -618,13 +618,20 @@ class App:
         self.chat_messages.append(msg)
         self._append_chat_room(msg)
 
-        # 서버로 전송 (비동기)
+        # 서버로 전송 (비동기) — 응답 index로 offset 앞당겨 중복 표시 방지
         if self._server_ready:
-            threading.Thread(
-                target=self._api_post,
-                args=(f"/api/chat/{self.room_id}", {"user": nick, "text": text}),
-                daemon=True,
-            ).start()
+            def _post():
+                res = self._api_post(
+                    f"/api/chat/{self.room_id}", {"user": nick, "text": text})
+                if res and isinstance(res.get("index"), int):
+                    next_offset = res["index"] + 1
+                    self.root.after(0, self._bump_offset, next_offset)
+            threading.Thread(target=_post, daemon=True).start()
+
+    def _bump_offset(self, new_offset: int):
+        """서버에 저장된 내 메시지를 폴링이 다시 가져오지 않도록 offset 전진."""
+        if new_offset > self._chat_offset:
+            self._chat_offset = new_offset
 
     def _sys_chat(self, text: str):
         msg = {"type": "room.join", "user": "시스템",
