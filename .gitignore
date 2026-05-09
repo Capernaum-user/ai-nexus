@@ -1,0 +1,39 @@
+# ── 런타임 생성 파일 (실행할 때마다 바뀌는 것들) ──────────────
+STATE.json
+TASK_QUEUE.json
+GOAL.md
+INTAKE.md
+RESEARCH.md
+DEEP_RESEARCH.md
+HALLCHECK.md
+PLAN.md
+REVISE_PLAN.md
+ACCEPTANCE_CRITERIA.md
+CLARIFICATIONS.md
+CLARIFY_QUESTIONS.md
+REVISIONS.md
+
+# ── 실행 결과 폴더 ─────────────────────────────────────────────
+logs/
+workspace/
+results/
+reviews/
+tasks/
+integration/
+debug_logs/
+
+# ── OS / 에디터 ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.vscode/
+.idea/
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
